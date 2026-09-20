@@ -13,9 +13,10 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "info":
-        print("项目阶段：scaffold")
+        print("项目阶段：M1 Simulation Reliability Baseline")
         print("项目周期：14 周")
         print("仿真状态：尚未实现")
+        print("优化器状态：CMA-ES 已选型，M1 通过前禁用")
         return 0
 
     parser.print_help()

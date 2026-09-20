@@ -1,8 +1,22 @@
 {
   "name": "半导体制造系统的智能调度",
-  "phase": "scaffold",
+  "phase": "m1_simulation_reliability_baseline",
   "duration_weeks": 14,
   "simulation_implemented": false,
+  "technical_route": {
+    "status": "frozen",
+    "contract_version": "0.1.0",
+    "current_milestone": "M1",
+    "optimizer": "CMA-ES",
+    "optimizer_enabled": false,
+    "out_of_scope": [
+      "PPO",
+      "GNN",
+      "explicit_AMHS",
+      "facility_layout_optimization",
+      "3D_digital_twin"
+    ]
+  },
   "event_replay": {
     "status": "planned",
     "layout": "2d schematic",
