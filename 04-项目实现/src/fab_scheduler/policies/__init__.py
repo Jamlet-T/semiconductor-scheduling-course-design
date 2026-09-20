@@ -1,1 +1,15 @@
-"""基准与调度策略模块占位；当前尚未实现。"""
+"""派工策略。"""
+
+from fab_scheduler.policies.base import (
+    DispatchAction,
+    DispatchPolicy,
+    DispatchState,
+)
+from fab_scheduler.policies.fifo import FIFOPolicy
+
+__all__ = [
+    "DispatchAction",
+    "DispatchPolicy",
+    "DispatchState",
+    "FIFOPolicy",
+]

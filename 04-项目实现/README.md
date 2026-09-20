@@ -1,6 +1,6 @@
 # fab-scheduler
 
-这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周，目前处于 `M1 — Simulation Reliability Baseline`：技术路线和仿真契约已经建立，CLI 可查看项目状态；仿真、策略、优化和结果评价尚未实现，CMA-ES 在 M1 通过前禁用。
+这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周，目前处于 `M1 — Simulation Reliability Baseline`：最小 DES 已验证 MC01、MC02，包含 FIFO、逐事件 trace 与 provenance；MC03～MC08 和正式数据实验尚未实现，CMA-ES 在 M1 通过前禁用。
 
 通过仓库根目录的命令安装：
 

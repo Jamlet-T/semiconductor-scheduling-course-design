@@ -6,7 +6,7 @@ M1 是进入 CMA-ES 优化前的强制门槛。完成标准是“仿真世界可
 
 - `docs/simulation-contract.md`：带版本和状态的仿真契约。
 - `docs/pyscfabsim-semantic-diff.md`：沿调用链形成的 PySCFabSim 语义差异报告。
-- `docs/data-dictionary.md`：本地字段、单位、来源、证据和未决项。
+- `docs/data-contract.md`：本地字段、内部结构、运行时语义、来源证据和显式假设。
 - `tests/fixtures/micro_cases/`：确定性微型算例。
 - 统一的 `DispatchPolicy.select(state, feasible_actions)` 接口。
 - FIFO、SPT、EDD、CR 的实现及统一平局规则。

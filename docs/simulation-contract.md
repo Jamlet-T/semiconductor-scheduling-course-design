@@ -1,10 +1,10 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
 版本：`0.1.0`  
-状态：技术路线冻结，数据语义核验中  
+状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
-本文档是仿真器、基准策略、优化器、实验和可视化共同遵守的行为契约。若实现与本文冲突，以本文和后续有证据的契约修订为准。只有本地 SMT2020 格式说明或可复现实验能够证明当前解释错误时，才修改已冻结语义；每次修改必须记录原因、证据、影响范围和版本。
+本文档是仿真器、基准策略、优化器、实验和可视化共同遵守的行为契约。原始字段映射与证据见 [Data Contract](data-contract.md)。若实现与本文冲突，以本文和后续有证据的契约修订为准。只有本地 SMT2020 格式说明或可复现实验能够证明当前解释错误时，才修改已冻结语义；每次修改必须记录原因、证据、影响范围和版本。
 
 状态标记：
 
@@ -62,8 +62,8 @@ objective = evaluate(metrics)
 
 | 模块 | 状态 | 契约 |
 | --- | --- | --- |
-| Lot 投放 | PROVISIONAL | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 延迟生成，不预展开 `RPT#` |
-| 首工序入队 | OPEN | 需确认 release 后是否先经历 `Fab → Fab` 搬运；微型算例由场景显式指定 |
+| Lot 投放 | FROZEN | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 惰性生成；每个重复 lot 继承 `DUE-START` 的相对交期 |
+| 首工序入队 | FROZEN | release 后直接进入首工序队列；首工序前不增加搬运 |
 | 路线推进 | FROZEN | 工序由 `(route_id, step_id, visit_index)` 唯一标识；只有加工完成事件才能推进实际路线 |
 | 工序完成 | FROZEN | 加工及约定的卸载活动完成后记为完成；随后 lot 进入运输或完成状态 |
 | 设备资格 | FROZEN | 工序只能分配给其 `STNFAM` 对应设备组中的合格设备 |
@@ -85,7 +85,7 @@ Machine: IDLE ↔ SETUP ↔ PROCESSING
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
 | 容量单位 | FROZEN | 本地 `BATCHMN/BATCHMX` 按 wafer 数解释；不得与 lot 数混用 |
-| 兼容性 | PROVISIONAL | `crit_sameroutestep` 首版解释为相同 route、step；取得格式证据后复核 |
+| 兼容性 | FROZEN | `crit_sameroutestep` 解释为相同 `route_id + step_id` |
 | 合法容量 | FROZEN | `B_min ≤ Σ lot.quantity ≤ B_max` |
 | 启动条件 | FROZEN | 先达到合法最小容量，再依据目标装载或等待上限决定是否启动 |
 | 欠载 | FROZEN | 小于 `B_min` 时，即使等待超时也不能启动；特殊放宽必须是单独场景并计数 |
@@ -104,8 +104,8 @@ start = n >= B_min and (n >= B_target or oldest_eligible_wait >= T_max)
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
 | 状态归属 | FROZEN | setup 是 machine state，不是 lot 的独立加工工序 |
-| 触发 | PROVISIONAL | 目标 operation 的请求 setup 与 machine 当前 setup 不同才触发 |
-| 时间来源 | OPEN | `setup.txt` 的有向转移、route `STIME` 和空 `CURSETUP` 的优先级需格式证据 |
+| 触发 | FROZEN | `WHEN=need` 时，目标 operation 的请求 setup 与 machine 当前 setup 不同才触发 |
+| 时间来源 | FROZEN | route `STIME` → 精确有向转移 → 空 `CURSETUP` fallback；仍缺失则数据校验失败 |
 | 资源占用 | FROZEN | setup 全程占用具体 machine，结束后才允许加工 |
 | 重复计时 | FROZEN | 一次换型只能计一次，不能同时累加 route 与 transition 两套时间 |
 
@@ -128,8 +128,8 @@ CQTConstraint(
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
 | 关系 | FROZEN | `STEP_CQT` 是显式终点，可跨越多道工序 |
-| 起点 | PROVISIONAL | 起始 step 加工完成时开启时钟 |
-| 终点 | PROVISIONAL | 目标 step 开始加工时关闭时钟 |
+| 起点 | FROZEN | 起始 step 的 `PROCESS_FINISH` 开启时钟 |
+| 终点 | FROZEN | 目标 step 的 `PROCESS_START` 关闭时钟 |
 | 持续时间 | FROZEN | 包含中间加工、搬运、等待和 setup 的实际经过时间 |
 | 违规量 | FROZEN | `max(0, target_start - source_finish - limit)` |
 | 未闭合窗口 | FROZEN | 仿真期末仍开启的窗口单列数量、当前风险和已超时量，不能从分母删除 |
@@ -146,20 +146,20 @@ cqt_risk = elapsed_since_source_finish / max_duration
 
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
-| 关系 | PROVISIONAL | `SVESTN/FORSTEP` 表示当前 step 选择的具体 machine 要在指定未来 step 复用 |
+| 关系 | FROZEN | `SVESTN=yes/FORSTEP` 表示当前 step 选择的具体 machine 要在指定未来 step 复用 |
 | 生命周期 | FROZEN | 绑定键为 `(lot, dedication_edge, visit)`，到达指定终点并完成后释放 |
 | 可行性 | FROZEN | 绑定设备不可用时 lot 等待，不能自行改派到同组其他设备 |
-| 初始 WIP | OPEN | 已越过绑定起点但缺少历史 machine 时，按版本化场景假设初始化并单独做敏感性分析 |
+| 初始 WIP | FROZEN | 不伪造 t=0 前的历史绑定；按未绑定派工并计数 `initial_wip_missing_dedication`，正式报告做 cohort 敏感性分析 |
 
 ## 8. 故障和 PM
 
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
-| 故障到达 | PROVISIONAL | `mttf_by_cal` 首版按日历时间故障事件解释 |
-| 抢占 | OPEN | 故障发生在 setup/加工中时是否立即中断，需源格式或参考实现证据 |
-| 修复后行为 | OPEN | 剩余时间继续、完整重启或报废返工必须核验；正式实验前不得静默选择 |
-| PM 触发 | PROVISIONAL | `mtbpm_by_cal` 首版按日历计划解释 |
-| PM 冲突 | OPEN | 与在制加工冲突时延迟 PM 还是抢占加工，需核验 |
+| 故障到达 | FROZEN | `mttf_by_cal` 按日历时间触发；attach 的 FOA 可定义首次发生 |
+| 抢占 | FROZEN | 故障立即中断 setup/加工 |
+| 修复后行为 | FROZEN | 修复后从剩余时间继续，不完整重启、不隐式报废 |
+| PM 触发 | FROZEN | `mtbpm_by_cal` 按日历触发；FOA 空单位时按累计加工 wafer 触发 |
+| PM 冲突 | FROZEN | 日历 PM 到点时中断并在结束后继续；按 wafer PM 在当前加工完成后、再次派工前执行 |
 | 旧完成事件 | FROZEN | 活动被中断后，旧完成事件必须用版本号/取消标记失效，禁止重复完工 |
 
 微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
@@ -170,8 +170,8 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | --- | --- | --- |
 | 时间占用 | FROZEN | lot 在搬运完成前不能进入目标设备候选队列 |
 | 运输资源 | FROZEN | 主线不建车辆或轨道容量，搬运为外生随机延迟 |
-| 参数 | OPEN | `uniform(7.5, 2.5)` 的第二参数含义需格式说明确认 |
-| 适用转移 | OPEN | 首工序、同机、同组及普通跨组转移是否都应用搬运需核验 |
+| 参数 | FROZEN | `uniform(m,w)` 为均值和全宽，因此 `uniform(7.5,2.5)=U[6.25,8.75] min` |
+| 适用转移 | FROZEN | 首工序前不搬运；后续工序按 location pair 查表，有行才抽样，无行记 0 并累计缺失 pair |
 | 指标 | FROZEN | 搬运计入 cycle time，并计入跨越该区间的 CQT |
 
 正式结论限定为给定 SMT2020 搬运假设下的调度效果。搬运缩放实验属于敏感性分析，不能称为真实 AMHS 验证。

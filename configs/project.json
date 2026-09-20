@@ -3,6 +3,11 @@
   "phase": "m1_simulation_reliability_baseline",
   "duration_weeks": 14,
   "simulation_implemented": false,
+  "simulation_status": "basic_des_mc01_mc02_verified",
+  "m1_verified_cases": [
+    "MC01_ROUTE_ORDER",
+    "MC02_DYNAMIC_RELEASE_FIFO"
+  ],
   "technical_route": {
     "status": "frozen",
     "contract_version": "0.1.0",

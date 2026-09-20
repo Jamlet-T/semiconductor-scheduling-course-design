@@ -3,6 +3,8 @@
 状态：静态源码审计完成，行为实验待补。  
 对照基线：[Simulation Contract](simulation-contract.md)。
 
+后续处理：`docs/data-contract.md` 已将本地模型的 release、setup、CQT、dedication、downtime/PM 与 transport 语义显式冻结；这不把 PySCFabSim 的静态行为提升为原始数据事实。相应机制仍需各自 micro case 验证。
+
 本报告不以目录名、字段名或 README 声明代替行为证据。每一项沿“数据读取 → 状态变量 → 事件触发 → 指标结果”检查。
 
 ## 1. 审计对象

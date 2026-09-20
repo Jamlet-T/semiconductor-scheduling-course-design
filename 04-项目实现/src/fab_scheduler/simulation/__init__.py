@@ -1,1 +1,15 @@
-"""离散事件仿真模块占位；当前尚未实现。"""
+"""离散事件仿真内核。"""
+
+from fab_scheduler.simulation.engine import (
+    SimulationError,
+    SimulationMetrics,
+    SimulationResult,
+    Simulator,
+)
+
+__all__ = [
+    "SimulationError",
+    "SimulationMetrics",
+    "SimulationResult",
+    "Simulator",
+]

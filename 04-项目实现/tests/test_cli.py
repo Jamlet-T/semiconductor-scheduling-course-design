@@ -32,12 +32,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage:", result.stdout.lower())
 
-    def test_info_reports_scaffold_status_without_results(self) -> None:
+    def test_info_reports_m1_status_without_results(self) -> None:
         result = self.run_cli("info")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("项目阶段：M1 Simulation Reliability Baseline", result.stdout)
         self.assertIn("项目周期：14 周", result.stdout)
-        self.assertIn("仿真状态：尚未实现", result.stdout)
+        self.assertIn(
+            "仿真状态：基础 DES 已验证 MC01/MC02；高级机制未实现",
+            result.stdout,
+        )
         self.assertIn("优化器状态：CMA-ES 已选型，M1 通过前禁用", result.stdout)
         self.assertNotIn("吞吐量", result.stdout)
 

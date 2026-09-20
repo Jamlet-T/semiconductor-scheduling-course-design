@@ -1,1 +1,10 @@
-"""调度领域模型模块占位；当前尚未实现。"""
+"""领域模型。"""
+
+from fab_scheduler.domain.models import (
+    LotSpec,
+    MachineSpec,
+    OperationSpec,
+    Scenario,
+)
+
+__all__ = ["LotSpec", "MachineSpec", "OperationSpec", "Scenario"]

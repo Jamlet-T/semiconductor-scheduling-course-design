@@ -3,10 +3,11 @@
   "contract_version": "0.1.0",
   "event_priority_contract_version": "0.1.0",
   "time_unit": "minute",
-  "status": "specification_only",
+  "status": "mc01_mc02_verified",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
+      "implementation_status": "verified",
       "purpose": "工艺顺序与路线推进",
       "termination": {"mode": "until_all_complete"},
       "lots": [
@@ -20,6 +21,17 @@
           ]
         }
       ],
+      "expected_trace": [
+        {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+        {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 10, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 10, "event": "ROUTE_ADVANCE", "lot": "L1", "step": 2},
+        {"time": 10, "event": "DISPATCH", "lot": "L1", "machine": "M2", "step": 2},
+        {"time": 10, "event": "PROCESS_START", "lot": "L1", "machine": "M2", "step": 2},
+        {"time": 30, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M2", "step": 2},
+        {"time": 30, "event": "LOT_COMPLETE", "lot": "L1", "step": 2}
+      ],
       "expected": {
         "intervals": [
           {"lot": "L1", "step": 1, "start": 0, "finish": 10},
@@ -30,6 +42,7 @@
     },
     {
       "id": "MC02_DYNAMIC_RELEASE_FIFO",
+      "implementation_status": "verified",
       "purpose": "动态投放与 FIFO 可见性",
       "policy": "FIFO",
       "termination": {"mode": "until_all_complete"},
@@ -37,6 +50,18 @@
       "lots": [
         {"id": "L1", "release": 0, "quantity_wafers": 25, "process": 10},
         {"id": "L2", "release": 5, "quantity_wafers": 25, "process": 10}
+      ],
+      "expected_trace": [
+        {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+        {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 5, "event": "LOT_RELEASE", "lot": "L2", "step": 1},
+        {"time": 10, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 10, "event": "LOT_COMPLETE", "lot": "L1", "step": 1},
+        {"time": 10, "event": "DISPATCH", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 10, "event": "PROCESS_START", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 20, "event": "PROCESS_FINISH", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 20, "event": "LOT_COMPLETE", "lot": "L2", "step": 1}
       ],
       "expected": {
         "intervals": [
@@ -47,6 +72,7 @@
     },
     {
       "id": "MC03_SEQUENCE_SETUP",
+      "implementation_status": "locked",
       "purpose": "有向换型与设备占用",
       "policy": "FIFO",
       "termination": {"mode": "until_all_complete"},
@@ -69,6 +95,7 @@
     },
     {
       "id": "MC04_BATCH_CAPACITY",
+      "implementation_status": "locked",
       "purpose": "wafer 容量、合法最小批量与等待门槛",
       "batch": {
         "minimum_wafers": 125,
@@ -106,6 +133,7 @@
     },
     {
       "id": "MC05_CROSS_STEP_CQT",
+      "implementation_status": "locked",
       "purpose": "跨步 CQT 开闭与违规量",
       "constraint": {
         "start_step": 1,
@@ -126,6 +154,7 @@
     },
     {
       "id": "MC06_MACHINE_DEDICATION",
+      "implementation_status": "locked",
       "purpose": "跨步骤绑定到具体设备",
       "tool_group": {"id": "G", "machines": ["M1", "M2"]},
       "lot": {
@@ -143,6 +172,7 @@
     },
     {
       "id": "MC07_FAILURE_AND_EVENT_BARRIER",
+      "implementation_status": "locked",
       "purpose": "抢占继续、旧事件失效与同刻优先级",
       "failure_mode": "preemptive_resume_for_test",
       "lot": {"id": "L1", "machine": "M1", "start": 0, "process": 10},
@@ -162,6 +192,7 @@
     },
     {
       "id": "MC08_TERMINAL_EXPOSURE",
+      "implementation_status": "locked",
       "purpose": "完成结果、期末 WIP 和 WIP 积分",
       "termination": {"mode": "fixed_horizon", "horizon": 30},
       "machines": [{"id": "M1"}, {"id": "M2"}],

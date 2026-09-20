@@ -27,7 +27,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertFalse(route["optimizer_enabled"])
 
     def test_micro_cases_follow_the_frozen_contract_version(self) -> None:
-        self.assertEqual(self.micro_cases["status"], "specification_only")
+        self.assertEqual(self.micro_cases["status"], "mc01_mc02_verified")
         self.assertEqual(
             self.micro_cases["contract_version"],
             self.project["technical_route"]["contract_version"],
@@ -52,6 +52,18 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(len(case_ids), 8)
         self.assertEqual(len(case_ids), len(set(case_ids)))
         self.assertEqual(set(case_ids), expected_ids)
+
+    def test_only_mc01_and_mc02_are_unlocked(self) -> None:
+        statuses = {
+            case["id"]: case["implementation_status"]
+            for case in self.micro_cases["cases"]
+        }
+        self.assertEqual(statuses["MC01_ROUTE_ORDER"], "verified")
+        self.assertEqual(statuses["MC02_DYNAMIC_RELEASE_FIFO"], "verified")
+        for case_id in sorted(
+            set(statuses) - {"MC01_ROUTE_ORDER", "MC02_DYNAMIC_RELEASE_FIFO"}
+        ):
+            self.assertEqual(statuses[case_id], "locked")
 
 
 if __name__ == "__main__":
