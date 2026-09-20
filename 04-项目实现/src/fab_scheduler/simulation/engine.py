@@ -1,8 +1,8 @@
 """可信轻量 DES 内核的第一阶段实现。
 
-当前覆盖 MC01-MC04：动态投放、等待队列、FIFO 派工、确定性加工、
-路线推进、显式 Setup、显式 Batch 和终止。CQT、Dedication、Failure/PM
-尚未解锁。
+当前覆盖 MC01-MC05：动态投放、等待队列、FIFO 派工、确定性加工、
+路线推进、显式 Setup、显式 Batch、跨步 CQT 和终止。Dedication、
+Failure/PM 尚未解锁。
 """
 
 from __future__ import annotations
@@ -30,6 +30,14 @@ from fab_scheduler.simulation.batch import (
     BatchCandidate,
     BatchDecision,
     BatchFormation,
+)
+from fab_scheduler.simulation.cqt import (
+    CQT_RUNTIME_SCHEMA_VERSION,
+    CQTMetrics,
+    CQTClockState,
+    CQTRecord,
+    CQTRuntime,
+    TerminalCQTSnapshot,
 )
 from fab_scheduler.simulation.provenance import (
     SIMULATION_CONTRACT_VERSION,
@@ -177,6 +185,9 @@ class SimulationResult:
     active_batches: tuple[ActiveBatchSnapshot, ...]
     machine_statistics: dict[str, MachineStatistics]
     completion_times: dict[str, float]
+    cqt_records: tuple[CQTRecord, ...]
+    open_cqt_clocks: tuple[TerminalCQTSnapshot, ...]
+    cqt_metrics: CQTMetrics
 
     def trace_as_dicts(self) -> list[dict[str, Any]]:
         return [record.to_dict() for record in self.trace]
@@ -197,6 +208,9 @@ class SimulationResult:
             "PROCESS_FINISH",
             "ROUTE_ADVANCE",
             "LOT_COMPLETE",
+            "CQT_OPEN",
+            "CQT_CLOSE",
+            "CQT_VIOLATION",
         }
         rows = []
         for record in self.trace:
@@ -224,6 +238,17 @@ class SimulationResult:
                         ),
                         "total_wafers": record.batch_total_wafers,
                         "start_reason": record.batch_start_reason,
+                        "cqt_constraint": record.cqt_constraint_id,
+                        "cqt_source_step": record.cqt_source_step_id,
+                        "cqt_target_step": record.cqt_target_step_id,
+                        "cqt_limit": record.cqt_limit,
+                        "cqt_opened_at": record.cqt_opened_at,
+                        "cqt_deadline": record.cqt_deadline,
+                        "cqt_closed_at": record.cqt_closed_at,
+                        "cqt_actual_duration": record.cqt_actual_duration,
+                        "cqt_slack": record.cqt_slack,
+                        "cqt_violation": record.cqt_violation,
+                        "cqt_excess_duration": record.cqt_excess_duration,
                     }.items()
                     if value is not None
                 }
@@ -269,6 +294,7 @@ class Simulator:
         self._setup_resolver = SetupDurationResolver(
             scenario.setup_transitions
         )
+        self._cqt_runtime = CQTRuntime(scenario.cqt_constraints)
         self._lots = {
             lot.lot_id: _LotRuntime(spec=lot)
             for lot in scenario.lots
@@ -309,6 +335,10 @@ class Simulator:
         self.current_time = end_time
         metrics = self._build_metrics(end_time)
         machine_statistics = self._build_machine_statistics(end_time)
+        open_cqt_clocks = self._cqt_runtime.terminal_snapshots(
+            at_time=end_time
+        )
+        cqt_metrics = self._cqt_runtime.metrics(at_time=end_time)
         provenance = RunProvenance(
             simulation_contract_version=SIMULATION_CONTRACT_VERSION,
             dataset_version=self.scenario.dataset_version,
@@ -317,6 +347,7 @@ class Simulator:
             simulation_config={
                 **asdict(self.scenario),
                 "random_stream_scheme": "sha256(seed,stream,entity,occurrence)",
+                "cqt_runtime_schema_version": CQT_RUNTIME_SCHEMA_VERSION,
             },
             dispatch_policy=self.policy.name,
             termination_condition=self.scenario.termination_mode,
@@ -353,6 +384,26 @@ class Simulator:
             active_batches=active_batches,
             machine_statistics=machine_statistics,
             completion_times=completion_times,
+            cqt_records=self._cqt_runtime.records,
+            open_cqt_clocks=open_cqt_clocks,
+            cqt_metrics=cqt_metrics,
+        )
+
+    def query_cqt_state(
+        self,
+        *,
+        lot_id: str,
+        constraint_id: str,
+        at_time: float | None = None,
+        visit_index: int = 0,
+    ) -> CQTClockState:
+        """为后续策略特征提供只读 slack/risk，不改变 FIFO。"""
+
+        return self._cqt_runtime.query(
+            lot_id=lot_id,
+            constraint_id=constraint_id,
+            visit_index=visit_index,
+            at_time=self.current_time if at_time is None else at_time,
         )
 
     def _run_calendar(self) -> None:
@@ -765,6 +816,13 @@ class Simulator:
                 state_before="LOT:RESERVED|BATCH:RESERVED",
                 state_after="LOT:PROCESSING|BATCH:PROCESSING",
             )
+            self._close_cqt_clocks(
+                lot=lot,
+                operation=operation,
+                priority=barrier_event.priority,
+                cause_event_seq=barrier_event.seq,
+                batch_id=batch_id,
+            )
         self._schedule(
             time=finish_time,
             event_type=EventType.BATCH_FINISH,
@@ -871,6 +929,12 @@ class Simulator:
             state_before="LOT:RESERVED|MACHINE:RESERVED",
             state_after="LOT:PROCESSING|MACHINE:PROCESSING",
         )
+        self._close_cqt_clocks(
+            lot=lot,
+            operation=operation,
+            priority=priority,
+            cause_event_seq=cause_event_seq,
+        )
         self._schedule(
             time=self.current_time + operation.processing_time,
             event_type=EventType.PROCESS_FINISH,
@@ -972,6 +1036,12 @@ class Simulator:
             state_before="LOT:PROCESSING|MACHINE:PROCESSING",
             state_after="LOT:PROCESSED|MACHINE:IDLE",
         )
+        self._open_cqt_clocks(
+            lot=lot,
+            operation=operation,
+            priority=event.priority,
+            cause_event_seq=event.seq,
+        )
         machine.status = MachineStatus.IDLE
         machine.lot_id = None
         machine.operation_index = None
@@ -1065,6 +1135,13 @@ class Simulator:
                 state_before="LOT:PROCESSING|BATCH:PROCESSING",
                 state_after="LOT:PROCESSED|BATCH:FINISHED",
             )
+            self._open_cqt_clocks(
+                lot=lot,
+                operation=operation,
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                batch_id=batch_id,
+            )
             self._advance_lot_after_processing(
                 priority=event.priority,
                 cause_event_seq=event.seq,
@@ -1124,6 +1201,98 @@ class Simulator:
             payload={},
         )
 
+    def _open_cqt_clocks(
+        self,
+        *,
+        lot: _LotRuntime,
+        operation: Any,
+        priority: int,
+        cause_event_seq: int,
+        batch_id: str | None = None,
+    ) -> None:
+        clocks = self._cqt_runtime.open_for_source(
+            lot_id=lot.spec.lot_id,
+            route_id=operation.route_id,
+            step_id=operation.step_id,
+            opened_at=self.current_time,
+            visit_index=0,
+        )
+        for clock in clocks:
+            self._record(
+                event_type="CQT_OPEN",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=operation,
+                batch_id=batch_id,
+                cqt_constraint_id=clock.constraint_id,
+                cqt_source_step_id=clock.source_step_id,
+                cqt_target_step_id=clock.target_step_id,
+                cqt_limit=clock.max_duration_minutes,
+                cqt_opened_at=clock.opened_at,
+                cqt_deadline=clock.deadline,
+                state_before="CQT:INACTIVE",
+                state_after="CQT:ACTIVE",
+            )
+
+    def _close_cqt_clocks(
+        self,
+        *,
+        lot: _LotRuntime,
+        operation: Any,
+        priority: int,
+        cause_event_seq: int,
+        batch_id: str | None = None,
+    ) -> None:
+        records = self._cqt_runtime.close_for_target(
+            lot_id=lot.spec.lot_id,
+            route_id=operation.route_id,
+            step_id=operation.step_id,
+            closed_at=self.current_time,
+            visit_index=0,
+        )
+        for record in records:
+            fields = {
+                "cqt_constraint_id": record.constraint_id,
+                "cqt_source_step_id": record.source_step_id,
+                "cqt_target_step_id": record.target_step_id,
+                "cqt_limit": record.limit,
+                "cqt_opened_at": record.opened_at,
+                "cqt_deadline": record.opened_at + record.limit,
+                "cqt_closed_at": record.closed_at,
+                "cqt_actual_duration": record.actual_duration,
+                "cqt_slack": record.slack,
+                "cqt_violation": record.violation,
+                "cqt_excess_duration": record.excess_duration,
+            }
+            self._record(
+                event_type="CQT_CLOSE",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=operation,
+                batch_id=batch_id,
+                state_before="CQT:ACTIVE",
+                state_after=(
+                    "CQT:CLOSED_VIOLATED"
+                    if record.violation
+                    else "CQT:CLOSED_SATISFIED"
+                ),
+                **fields,
+            )
+            if record.violation:
+                self._record(
+                    event_type="CQT_VIOLATION",
+                    priority=priority,
+                    cause_event_seq=cause_event_seq,
+                    lot=lot,
+                    operation=operation,
+                    batch_id=batch_id,
+                    state_before="CQT:CLOSED",
+                    state_after="CQT:VIOLATION_RECORDED",
+                    **fields,
+                )
+
     def _record(
         self,
         *,
@@ -1140,6 +1309,17 @@ class Simulator:
         batch_member_wafers: tuple[int, ...] | None = None,
         batch_total_wafers: int | None = None,
         batch_start_reason: str | None = None,
+        cqt_constraint_id: str | None = None,
+        cqt_source_step_id: int | None = None,
+        cqt_target_step_id: int | None = None,
+        cqt_limit: float | None = None,
+        cqt_opened_at: float | None = None,
+        cqt_deadline: float | None = None,
+        cqt_closed_at: float | None = None,
+        cqt_actual_duration: float | None = None,
+        cqt_slack: float | None = None,
+        cqt_violation: bool | None = None,
+        cqt_excess_duration: float | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -1166,6 +1346,17 @@ class Simulator:
             batch_member_wafers=batch_member_wafers,
             batch_total_wafers=batch_total_wafers,
             batch_start_reason=batch_start_reason,
+            cqt_constraint_id=cqt_constraint_id,
+            cqt_source_step_id=cqt_source_step_id,
+            cqt_target_step_id=cqt_target_step_id,
+            cqt_limit=cqt_limit,
+            cqt_opened_at=cqt_opened_at,
+            cqt_deadline=cqt_deadline,
+            cqt_closed_at=cqt_closed_at,
+            cqt_actual_duration=cqt_actual_duration,
+            cqt_slack=cqt_slack,
+            cqt_violation=cqt_violation,
+            cqt_excess_duration=cqt_excess_duration,
             state_before=state_before,
             state_after=state_after,
             cause_event_seq=cause_event_seq,

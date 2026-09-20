@@ -12,6 +12,29 @@ BatchMemberSelectionRule = Literal["fifo_queue_time_lot_id"]
 
 
 @dataclass(frozen=True, slots=True)
+class CQTSpec:
+    """一条跨步骤 Critical Queue Time 约束。"""
+
+    constraint_id: str
+    route_id: str
+    source_step_id: int
+    target_step_id: int
+    max_duration_minutes: float
+
+    def __post_init__(self) -> None:
+        if not self.constraint_id:
+            raise ValueError("CQT constraint_id 不能为空")
+        if not self.route_id:
+            raise ValueError("CQT route_id 不能为空")
+        if self.source_step_id < 1 or self.target_step_id < 1:
+            raise ValueError("CQT step_id 必须从 1 开始")
+        if self.target_step_id <= self.source_step_id:
+            raise ValueError("CQT target step 必须晚于 source step")
+        if self.max_duration_minutes <= 0:
+            raise ValueError("CQT max_duration_minutes 必须为正")
+
+
+@dataclass(frozen=True, slots=True)
 class MachineSpec:
     """一台可独立占用的物理设备。"""
 
@@ -141,6 +164,7 @@ class Scenario:
     termination_mode: TerminationMode = "until_all_complete"
     horizon: float | None = None
     setup_transitions: tuple[SetupTransition, ...] = ()
+    cqt_constraints: tuple[CQTSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -172,3 +196,31 @@ class Scenario:
         ]
         if len(transition_keys) != len(set(transition_keys)):
             raise ValueError("setup transition 不能重复")
+        constraint_ids = [
+            constraint.constraint_id
+            for constraint in self.cqt_constraints
+        ]
+        if len(constraint_ids) != len(set(constraint_ids)):
+            raise ValueError("CQT constraint_id 不能重复")
+        route_steps: dict[str, set[int]] = {}
+        for lot in self.lots:
+            for operation in lot.operations:
+                route_steps.setdefault(operation.route_id, set()).add(
+                    operation.step_id
+                )
+        for constraint in self.cqt_constraints:
+            known_steps = route_steps.get(constraint.route_id)
+            if known_steps is None:
+                raise ValueError(
+                    f"CQT {constraint.constraint_id} 引用了未知 route "
+                    f"{constraint.route_id}"
+                )
+            missing = {
+                constraint.source_step_id,
+                constraint.target_step_id,
+            } - known_steps
+            if missing:
+                raise ValueError(
+                    f"CQT {constraint.constraint_id} 引用了 route 中不存在的 "
+                    f"step {sorted(missing)}"
+                )

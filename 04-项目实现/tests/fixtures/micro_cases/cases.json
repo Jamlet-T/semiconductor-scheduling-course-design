@@ -3,7 +3,7 @@
   "contract_version": "0.1.0",
   "event_priority_contract_version": "0.1.0",
   "time_unit": "minute",
-  "status": "mc01_mc04_verified",
+  "status": "mc01_mc05_verified",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
@@ -209,23 +209,425 @@
     },
     {
       "id": "MC05_CROSS_STEP_CQT",
-      "implementation_status": "locked",
+      "implementation_status": "verified",
       "purpose": "跨步 CQT 开闭与违规量",
       "constraint": {
         "start_step": 1,
         "end_step": 3,
         "start_event": "PROCESS_FINISH",
         "end_event": "PROCESS_START",
-        "limit": 8
+        "limit": 8,
+        "constraint_id": "CQT-MAIN-1-3",
+        "route_id": "MC05",
+        "visit_index": 0,
+        "runtime_semantics": "soft_constraint"
       },
       "operations": [
-        {"step": 1, "process": 10},
-        {"step": 2, "process": 5},
-        {"step": 3, "process": 10}
+        {
+          "step": 1,
+          "process": 10
+        },
+        {
+          "step": 2,
+          "process": 5
+        },
+        {
+          "step": 3,
+          "process": 10
+        }
       ],
       "variants": [
-        {"queue_before_step_3": 2, "expected_step_3_start": 17, "elapsed": 7, "violation": 0},
-        {"queue_before_step_3": 4, "expected_step_3_start": 19, "elapsed": 9, "violation": 1}
+        {
+          "queue_before_step_3": 2,
+          "expected_step_3_start": 17,
+          "elapsed": 7,
+          "violation": 0,
+          "blocker_lot": {
+            "id": "B1",
+            "machine": "M3",
+            "release": 0,
+            "process": 17
+          },
+          "expected_trace": [
+            {
+              "time": 0,
+              "event": "LOT_RELEASE",
+              "lot": "B1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "LOT_RELEASE",
+              "lot": "L1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "DISPATCH",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "PROCESS_START",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 10,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 10,
+              "event": "CQT_OPEN",
+              "lot": "L1",
+              "step": 1,
+              "cqt_constraint": "CQT-MAIN-1-3",
+              "cqt_source_step": 1,
+              "cqt_target_step": 3,
+              "cqt_limit": 8,
+              "cqt_opened_at": 10,
+              "cqt_deadline": 18
+            },
+            {
+              "time": 10,
+              "event": "ROUTE_ADVANCE",
+              "lot": "L1",
+              "step": 2
+            },
+            {
+              "time": 10,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 10,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 15,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 15,
+              "event": "ROUTE_ADVANCE",
+              "lot": "L1",
+              "step": 3
+            },
+            {
+              "time": 17,
+              "event": "PROCESS_FINISH",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 17,
+              "event": "LOT_COMPLETE",
+              "lot": "B1",
+              "step": 1
+            },
+            {
+              "time": 17,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 17,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 17,
+              "event": "CQT_CLOSE",
+              "lot": "L1",
+              "step": 3,
+              "cqt_constraint": "CQT-MAIN-1-3",
+              "cqt_source_step": 1,
+              "cqt_target_step": 3,
+              "cqt_limit": 8,
+              "cqt_opened_at": 10,
+              "cqt_deadline": 18,
+              "cqt_closed_at": 17,
+              "cqt_actual_duration": 7,
+              "cqt_slack": 1,
+              "cqt_violation": false,
+              "cqt_excess_duration": 0.0
+            },
+            {
+              "time": 27,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 27,
+              "event": "LOT_COMPLETE",
+              "lot": "L1",
+              "step": 3
+            }
+          ],
+          "expected": {
+            "completion": {
+              "L1": 27,
+              "B1": 17
+            },
+            "metrics": {
+              "completed_lots": 2,
+              "released_lots": 2,
+              "completion_ratio": 1.0,
+              "mean_cycle_time_completed": 22.0,
+              "throughput_lots_per_minute": 0.07407407407407407,
+              "terminal_wip_lots": 0,
+              "end_time": 27
+            },
+            "cqt_metrics": {
+              "closed_cqt_count": 1,
+              "cqt_violation_count": 0,
+              "total_cqt_excess": 0,
+              "max_cqt_excess": 0.0,
+              "open_cqt_count": 0,
+              "overdue_open_cqt_count": 0,
+              "terminal_cqt_exposure": 0
+            }
+          }
+        },
+        {
+          "queue_before_step_3": 4,
+          "expected_step_3_start": 19,
+          "elapsed": 9,
+          "violation": 1,
+          "blocker_lot": {
+            "id": "B1",
+            "machine": "M3",
+            "release": 0,
+            "process": 19
+          },
+          "expected_trace": [
+            {
+              "time": 0,
+              "event": "LOT_RELEASE",
+              "lot": "B1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "LOT_RELEASE",
+              "lot": "L1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "DISPATCH",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 0,
+              "event": "PROCESS_START",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 10,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M1",
+              "step": 1
+            },
+            {
+              "time": 10,
+              "event": "CQT_OPEN",
+              "lot": "L1",
+              "step": 1,
+              "cqt_constraint": "CQT-MAIN-1-3",
+              "cqt_source_step": 1,
+              "cqt_target_step": 3,
+              "cqt_limit": 8,
+              "cqt_opened_at": 10,
+              "cqt_deadline": 18
+            },
+            {
+              "time": 10,
+              "event": "ROUTE_ADVANCE",
+              "lot": "L1",
+              "step": 2
+            },
+            {
+              "time": 10,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 10,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 15,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M2",
+              "step": 2
+            },
+            {
+              "time": 15,
+              "event": "ROUTE_ADVANCE",
+              "lot": "L1",
+              "step": 3
+            },
+            {
+              "time": 19,
+              "event": "PROCESS_FINISH",
+              "lot": "B1",
+              "machine": "M3",
+              "step": 1
+            },
+            {
+              "time": 19,
+              "event": "LOT_COMPLETE",
+              "lot": "B1",
+              "step": 1
+            },
+            {
+              "time": 19,
+              "event": "DISPATCH",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 19,
+              "event": "PROCESS_START",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 19,
+              "event": "CQT_CLOSE",
+              "lot": "L1",
+              "step": 3,
+              "cqt_constraint": "CQT-MAIN-1-3",
+              "cqt_source_step": 1,
+              "cqt_target_step": 3,
+              "cqt_limit": 8,
+              "cqt_opened_at": 10,
+              "cqt_deadline": 18,
+              "cqt_closed_at": 19,
+              "cqt_actual_duration": 9,
+              "cqt_slack": -1,
+              "cqt_violation": true,
+              "cqt_excess_duration": 1
+            },
+            {
+              "time": 19,
+              "event": "CQT_VIOLATION",
+              "lot": "L1",
+              "step": 3,
+              "cqt_constraint": "CQT-MAIN-1-3",
+              "cqt_source_step": 1,
+              "cqt_target_step": 3,
+              "cqt_limit": 8,
+              "cqt_opened_at": 10,
+              "cqt_deadline": 18,
+              "cqt_closed_at": 19,
+              "cqt_actual_duration": 9,
+              "cqt_slack": -1,
+              "cqt_violation": true,
+              "cqt_excess_duration": 1
+            },
+            {
+              "time": 29,
+              "event": "PROCESS_FINISH",
+              "lot": "L1",
+              "machine": "M3",
+              "step": 3
+            },
+            {
+              "time": 29,
+              "event": "LOT_COMPLETE",
+              "lot": "L1",
+              "step": 3
+            }
+          ],
+          "expected": {
+            "completion": {
+              "L1": 29,
+              "B1": 19
+            },
+            "metrics": {
+              "completed_lots": 2,
+              "released_lots": 2,
+              "completion_ratio": 1.0,
+              "mean_cycle_time_completed": 24.0,
+              "throughput_lots_per_minute": 0.06896551724137931,
+              "terminal_wip_lots": 0,
+              "end_time": 29
+            },
+            "cqt_metrics": {
+              "closed_cqt_count": 1,
+              "cqt_violation_count": 1,
+              "total_cqt_excess": 1,
+              "max_cqt_excess": 1,
+              "open_cqt_count": 0,
+              "overdue_open_cqt_count": 0,
+              "terminal_cqt_exposure": 0
+            }
+          }
+        }
       ]
     },
     {

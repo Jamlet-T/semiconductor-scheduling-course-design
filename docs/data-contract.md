@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03 与 Batch 的 MC04 已进入实现并验证；CQT、Dedication、Failure/PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03、Batch 的 MC04 与 CQT 的 MC05 已进入实现并验证；Dedication、Failure/PM 仍不得用于正式实验。
 
 ## 1. 证据层级与统一约定
 
@@ -192,7 +192,7 @@ route.STIME
 | `STEP_CQT` | `CQTConstraint.end_step` | 显式目标 step，可跨步 |
 | `CQT/CQTUNITS` | `max_duration_minutes` | 最大实际经过时间 |
 
-起点冻结为 source step 的 `PROCESS_FINISH`，终点冻结为 target step 的 `PROCESS_START`。中间加工、等待、搬运和 setup 均计时。两套数据中的所有 CQT target 都存在且严格位于 source 之后。实现前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。
+起点冻结为 source step 的 `PROCESS_FINISH`，终点冻结为 target step 的 `PROCESS_START`。中间加工、等待、搬运和 setup 均计时。两套数据中的所有 CQT target 都存在且严格位于 source 之后。MC05 已验证跨步开闭、精确期限、软约束超限、多个活动时钟、Setup 延迟、Batch 成员钩子与 fixed-horizon 开放暴露；状态为 `VERIFIED-MC05-RUNTIME`。正式 SMT2020 loader 尚未把原始 CQT 行装配为 runtime spec，初始 WIP 的历史 CQT 起点仍按第 6 节作为未知证据单列。
 
 ## 10. Dedication
 

@@ -69,6 +69,17 @@ class TraceRecord:
     batch_member_wafers: tuple[int, ...] | None = None
     batch_total_wafers: int | None = None
     batch_start_reason: str | None = None
+    cqt_constraint_id: str | None = None
+    cqt_source_step_id: int | None = None
+    cqt_target_step_id: int | None = None
+    cqt_limit: float | None = None
+    cqt_opened_at: float | None = None
+    cqt_deadline: float | None = None
+    cqt_closed_at: float | None = None
+    cqt_actual_duration: float | None = None
+    cqt_slack: float | None = None
+    cqt_violation: bool | None = None
+    cqt_excess_duration: float | None = None
     state_before: str | None = None
     state_after: str | None = None
     cause_event_seq: int | None = None

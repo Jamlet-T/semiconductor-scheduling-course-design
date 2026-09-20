@@ -3,12 +3,13 @@
   "phase": "m1_simulation_reliability_baseline",
   "duration_weeks": 14,
   "simulation_implemented": false,
-  "simulation_status": "des_batch_mc01_mc04_verified",
+  "simulation_status": "des_cqt_mc01_mc05_verified",
   "m1_verified_cases": [
     "MC01_ROUTE_ORDER",
     "MC02_DYNAMIC_RELEASE_FIFO",
     "MC03_SEQUENCE_SETUP",
-    "MC04_BATCH_CAPACITY"
+    "MC04_BATCH_CAPACITY",
+    "MC05_CROSS_STEP_CQT"
   ],
   "technical_route": {
     "status": "frozen",

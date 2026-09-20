@@ -11,6 +11,11 @@ from fab_scheduler.simulation.engine import (
     SimulationResult,
     Simulator,
 )
+from fab_scheduler.simulation.cqt import (
+    CQTMetrics,
+    CQTRecord,
+    TerminalCQTSnapshot,
+)
 
 __all__ = [
     "ActiveBatchSnapshot",
@@ -22,4 +27,7 @@ __all__ = [
     "SimulationMetrics",
     "SimulationResult",
     "Simulator",
+    "CQTMetrics",
+    "CQTRecord",
+    "TerminalCQTSnapshot",
 ]

@@ -84,6 +84,8 @@ batch_process=20
 
 ### MC05：跨步 CQT
 
+实现状态：`VERIFIED`（跨步开闭、精确期限、超限软约束、多个活动时钟、Setup 延迟、Batch 钩子、fixed-horizon 开放暴露与确定性测试已通过）。
+
 ```text
 L1: O1=10, O2=5, O3=10
 CQT: O1 finish → O3 start, limit=8
