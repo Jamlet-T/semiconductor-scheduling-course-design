@@ -1,0 +1,12 @@
+{
+  "name": "半导体制造系统的智能调度",
+  "phase": "scaffold",
+  "duration_weeks": 14,
+  "simulation_implemented": false,
+  "event_replay": {
+    "status": "planned",
+    "layout": "2d schematic",
+    "coordinates_affect_transport_time": false,
+    "real_equipment_digital_twin": false
+  }
+}

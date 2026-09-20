@@ -1,0 +1,45 @@
+# Course guidance, templates and presentation material; datasets/ is versioned
+/00-指导文件/
+/01-模板/
+/02-汇报/
+
+# Python environments, bytecode and tooling caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets and agent configuration
+.env
+.env.*
+!.env.example
+.codex/
+.agents/
+.claude/
+
+# Generated simulation runs and artifacts
+**/runs/
+**/artifacts/
+**/*.egg-info/
+/build/
+/dist/
+
+# Common binary teaching and generated office documents
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+
+# OS/editor noise
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
