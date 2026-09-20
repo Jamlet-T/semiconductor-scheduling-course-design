@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02 与 Setup 的 MC03 已进入实现并验证；Batch、CQT、Dedication、Failure/PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03 与 Batch 的 MC04 已进入实现并验证；CQT、Dedication、Failure/PM 仍不得用于正式实验。
 
 ## 1. 证据层级与统一约定
 
@@ -159,7 +159,7 @@ n_wafers >= B_min
 and (n_wafers >= B_target or feasible_wait >= T_max)
 ```
 
-低于 `B_min` 不能因超时启动。实现前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 SMT2020 loader 的 per-batch 随机加工、tool 字段映射和 Setup 联合路径仍未实现。
 
 ## 8. Setup
 

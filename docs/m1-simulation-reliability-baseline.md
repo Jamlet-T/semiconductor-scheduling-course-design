@@ -66,6 +66,8 @@ setup A→B=5
 
 ### MC04：Batch 单位、合法容量与等待
 
+实现状态：`VERIFIED`（wafer 容量、兼容分组、确定性成员选择、主动 timeout、stale timeout、fixed horizon 与逐事件 trace 已通过）。
+
 ```text
 B_min=125 wafers, B_max=150 wafers, B_target=150 wafers
 lot_size=25 wafers, max_wait_after_feasible=5

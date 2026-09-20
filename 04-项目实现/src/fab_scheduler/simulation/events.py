@@ -20,15 +20,19 @@ class EventPriority(IntEnum):
 
 class EventType(str, Enum):
     PROCESS_FINISH = "PROCESS_FINISH"
+    BATCH_FINISH = "BATCH_FINISH"
     SETUP_FINISH = "SETUP_FINISH"
     LOT_RELEASE = "LOT_RELEASE"
+    BATCH_TIMEOUT = "BATCH_TIMEOUT"
     DISPATCH_BARRIER = "DISPATCH_BARRIER"
 
 
 EVENT_PRIORITIES = {
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.BATCH_FINISH: EventPriority.PROCESS_FINISH,
     EventType.SETUP_FINISH: EventPriority.PROCESS_FINISH,
     EventType.LOT_RELEASE: EventPriority.LOT_RELEASE,
+    EventType.BATCH_TIMEOUT: EventPriority.MONITOR,
     EventType.DISPATCH_BARRIER: EventPriority.DISPATCH_BARRIER,
 }
 
@@ -61,6 +65,10 @@ class TraceRecord:
     machine_id: str | None = None
     tool_group_id: str | None = None
     batch_id: str | None = None
+    batch_member_lot_ids: tuple[str, ...] | None = None
+    batch_member_wafers: tuple[int, ...] | None = None
+    batch_total_wafers: int | None = None
+    batch_start_reason: str | None = None
     state_before: str | None = None
     state_after: str | None = None
     cause_event_seq: int | None = None

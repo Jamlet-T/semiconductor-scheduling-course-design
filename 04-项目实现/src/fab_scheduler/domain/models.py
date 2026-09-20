@@ -7,6 +7,8 @@ from typing import Literal
 
 
 TerminationMode = Literal["until_all_complete", "fixed_horizon"]
+BatchCompatibilityRule = Literal["crit_sameroutestep"]
+BatchMemberSelectionRule = Literal["fifo_queue_time_lot_id"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +24,40 @@ class MachineSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchSpec:
+    """一道 per-batch 工序的 wafer 容量与确定性组批参数。"""
+
+    minimum_wafers: int
+    maximum_wafers: int
+    target_wafers: int
+    max_wait_minutes: float
+    compatibility_rule: BatchCompatibilityRule = "crit_sameroutestep"
+    member_selection_rule: BatchMemberSelectionRule = (
+        "fifo_queue_time_lot_id"
+    )
+
+    def __post_init__(self) -> None:
+        if self.minimum_wafers <= 0:
+            raise ValueError("batch minimum_wafers 必须为正")
+        if self.maximum_wafers < self.minimum_wafers:
+            raise ValueError("batch maximum_wafers 不能小于 minimum_wafers")
+        if not (
+            self.minimum_wafers
+            <= self.target_wafers
+            <= self.maximum_wafers
+        ):
+            raise ValueError(
+                "batch target_wafers 必须位于 minimum 与 maximum 之间"
+            )
+        if self.max_wait_minutes < 0:
+            raise ValueError("batch max_wait_minutes 不能为负")
+        if self.compatibility_rule != "crit_sameroutestep":
+            raise ValueError("当前仅支持 crit_sameroutestep")
+        if self.member_selection_rule != "fifo_queue_time_lot_id":
+            raise ValueError("当前仅支持 fifo_queue_time_lot_id")
+
+
+@dataclass(frozen=True, slots=True)
 class OperationSpec:
     """lot 路线中的一道确定性工序。"""
 
@@ -32,6 +68,7 @@ class OperationSpec:
     tool_group_id: str | None = None
     required_setup: str | None = None
     setup_override_minutes: float | None = None
+    batch_spec: BatchSpec | None = None
 
     def __post_init__(self) -> None:
         if self.step_id < 1:

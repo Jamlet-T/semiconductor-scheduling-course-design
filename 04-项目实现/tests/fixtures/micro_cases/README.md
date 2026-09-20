@@ -1,6 +1,6 @@
 # M1 金标准微型算例
 
-`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC03 已由轻量 DES 逐事件验证；MC04～MC08 保持锁定，fixture 的存在不代表这些机制已经实现。
+`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC04 已由轻量 DES 逐事件验证；MC05～MC08 保持锁定，fixture 的存在不代表这些机制已经实现。
 
 约定：
 

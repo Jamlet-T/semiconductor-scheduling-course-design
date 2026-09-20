@@ -1,6 +1,8 @@
 """离散事件仿真内核。"""
 
 from fab_scheduler.simulation.engine import (
+    ActiveBatchSnapshot,
+    BatchInterval,
     MachineStatistics,
     ProcessingInterval,
     SetupInterval,
@@ -11,6 +13,8 @@ from fab_scheduler.simulation.engine import (
 )
 
 __all__ = [
+    "ActiveBatchSnapshot",
+    "BatchInterval",
     "MachineStatistics",
     "ProcessingInterval",
     "SetupInterval",

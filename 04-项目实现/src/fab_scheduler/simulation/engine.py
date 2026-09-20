@@ -1,7 +1,8 @@
 """可信轻量 DES 内核的第一阶段实现。
 
-当前覆盖 MC01-MC03：动态投放、等待队列、FIFO 派工、确定性加工、
-路线推进、显式 Setup 和终止。Batch、CQT、Dedication、Failure/PM 尚未解锁。
+当前覆盖 MC01-MC04：动态投放、等待队列、FIFO 派工、确定性加工、
+路线推进、显式 Setup、显式 Batch 和终止。CQT、Dedication、Failure/PM
+尚未解锁。
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ from fab_scheduler.simulation.events import (
     Event,
     EventType,
     TraceRecord,
+)
+from fab_scheduler.simulation.batch import (
+    BatchCandidate,
+    BatchDecision,
+    BatchFormation,
 )
 from fab_scheduler.simulation.provenance import (
     SIMULATION_CONTRACT_VERSION,
@@ -69,6 +75,22 @@ class _MachineRuntime:
     setup_from: str | None = None
     setup_to: str | None = None
     processing_started_at: float | None = None
+    active_batch_id: str | None = None
+
+
+@dataclass(slots=True)
+class _ActiveBatch:
+    batch_id: str
+    machine_id: str
+    member_lot_ids: tuple[str, ...]
+    member_wafers: tuple[int, ...]
+    operation_indices: tuple[int, ...]
+    route_id: str
+    step_id: int
+    total_wafers: int
+    start_time: float
+    scheduled_finish_time: float
+    start_reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +116,32 @@ class SetupInterval:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchInterval:
+    batch_id: str
+    machine_id: str
+    member_lot_ids: tuple[str, ...]
+    member_wafers: tuple[int, ...]
+    route_id: str
+    step_id: int
+    total_wafers: int
+    start: float
+    finish: float
+    start_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveBatchSnapshot:
+    batch_id: str
+    machine_id: str
+    member_lot_ids: tuple[str, ...]
+    member_wafers: tuple[int, ...]
+    total_wafers: int
+    start: float
+    scheduled_finish: float
+    start_reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class MachineStatistics:
     machine_id: str
     processing_time: float
@@ -101,6 +149,7 @@ class MachineStatistics:
     idle_time: float
     final_state: str
     final_setup: str
+    active_batch_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +173,8 @@ class SimulationResult:
     trace: tuple[TraceRecord, ...]
     processing_intervals: tuple[ProcessingInterval, ...]
     setup_intervals: tuple[SetupInterval, ...]
+    batch_intervals: tuple[BatchInterval, ...]
+    active_batches: tuple[ActiveBatchSnapshot, ...]
     machine_statistics: dict[str, MachineStatistics]
     completion_times: dict[str, float]
 
@@ -138,6 +189,10 @@ class SimulationResult:
             "DISPATCH",
             "SETUP_START",
             "SETUP_FINISH",
+            "BATCH_TIMEOUT",
+            "BATCH_FORMED",
+            "BATCH_START",
+            "BATCH_FINISH",
             "PROCESS_START",
             "PROCESS_FINISH",
             "ROUTE_ADVANCE",
@@ -156,6 +211,19 @@ class SimulationResult:
                         "lot": record.lot_id,
                         "machine": record.machine_id,
                         "step": record.step_id,
+                        "batch": record.batch_id,
+                        "member_lots": (
+                            list(record.batch_member_lot_ids)
+                            if record.batch_member_lot_ids is not None
+                            else None
+                        ),
+                        "member_wafers": (
+                            list(record.batch_member_wafers)
+                            if record.batch_member_wafers is not None
+                            else None
+                        ),
+                        "total_wafers": record.batch_total_wafers,
+                        "start_reason": record.batch_start_reason,
                     }.items()
                     if value is not None
                 }
@@ -190,6 +258,14 @@ class Simulator:
         self._trace: list[TraceRecord] = []
         self._processing_intervals: list[ProcessingInterval] = []
         self._setup_intervals: list[SetupInterval] = []
+        self._batch_intervals: list[BatchInterval] = []
+        self._active_batches: dict[str, _ActiveBatch] = {}
+        self._batch_formation = BatchFormation()
+        self._next_batch_seq = 1
+        self._next_batch_timeout_token = 1
+        self._pending_batch_timeouts: dict[
+            tuple[str, str, int], tuple[int, float]
+        ] = {}
         self._setup_resolver = SetupDurationResolver(
             scenario.setup_transitions
         )
@@ -251,12 +327,30 @@ class Simulator:
             for lot_id, runtime in self._lots.items()
             if runtime.completion_time is not None
         }
+        active_batches = tuple(
+            ActiveBatchSnapshot(
+                batch_id=batch.batch_id,
+                machine_id=batch.machine_id,
+                member_lot_ids=batch.member_lot_ids,
+                member_wafers=batch.member_wafers,
+                total_wafers=batch.total_wafers,
+                start=batch.start_time,
+                scheduled_finish=batch.scheduled_finish_time,
+                start_reason=batch.start_reason,
+            )
+            for batch in sorted(
+                self._active_batches.values(),
+                key=lambda item: item.batch_id,
+            )
+        )
         return SimulationResult(
             provenance=provenance,
             metrics=metrics,
             trace=tuple(self._trace),
             processing_intervals=tuple(self._processing_intervals),
             setup_intervals=tuple(self._setup_intervals),
+            batch_intervals=tuple(self._batch_intervals),
+            active_batches=active_batches,
             machine_statistics=machine_statistics,
             completion_times=completion_times,
         )
@@ -327,8 +421,12 @@ class Simulator:
             self._handle_release(event)
         elif event.event_type is EventType.PROCESS_FINISH:
             self._handle_process_finish(event)
+        elif event.event_type is EventType.BATCH_FINISH:
+            self._handle_batch_finish(event)
         elif event.event_type is EventType.SETUP_FINISH:
             self._handle_setup_finish(event)
+        elif event.event_type is EventType.BATCH_TIMEOUT:
+            self._handle_batch_timeout(event)
         elif event.event_type is EventType.DISPATCH_BARRIER:
             self._handle_dispatch_barrier(event)
         else:
@@ -365,7 +463,7 @@ class Simulator:
             machine = self._machines[machine_id]
             if machine.status is not MachineStatus.IDLE:
                 continue
-            actions = self._feasible_actions(machine_id)
+            actions, batch_decisions = self._dispatch_options(machine_id)
             action = self.policy.select(
                 DispatchState(current_time=self.current_time),
                 actions,
@@ -374,9 +472,13 @@ class Simulator:
                 continue
             if action not in actions:
                 raise SimulationError("策略返回了不可行动作")
-            self._commit_dispatch(event, action)
+            batch_decision = batch_decisions.get(action.lot_id)
+            if batch_decision is not None:
+                self._start_batch(event, machine_id, batch_decision)
+            else:
+                self._commit_dispatch(event, action)
 
-    def _feasible_actions(self, machine_id: str) -> list[DispatchAction]:
+    def _eligible_actions(self, machine_id: str) -> list[DispatchAction]:
         actions = []
         for lot_id in sorted(self._lots):
             lot = self._lots[lot_id]
@@ -399,6 +501,277 @@ class Simulator:
             )
         return actions
 
+    def _dispatch_options(
+        self,
+        machine_id: str,
+    ) -> tuple[list[DispatchAction], dict[str, BatchDecision]]:
+        eligible = self._eligible_actions(machine_id)
+        action_by_lot = {action.lot_id: action for action in eligible}
+        ordinary: list[DispatchAction] = []
+        groups: dict[tuple[str, int], list[BatchCandidate]] = {}
+        for action in eligible:
+            lot = self._lots[action.lot_id]
+            operation = lot.spec.operations[action.operation_index]
+            if operation.batch_spec is None:
+                ordinary.append(action)
+                continue
+            groups.setdefault(
+                (operation.route_id, operation.step_id),
+                [],
+            ).append(
+                BatchCandidate(
+                    lot_id=lot.spec.lot_id,
+                    quantity_wafers=lot.spec.quantity_wafers,
+                    queue_entered_at=action.queue_entered_at,
+                    route_id=operation.route_id,
+                    step_id=operation.step_id,
+                    operation_index=action.operation_index,
+                    processing_time=operation.processing_time,
+                    batch_spec=operation.batch_spec,
+                )
+            )
+
+        decisions: dict[str, BatchDecision] = {}
+        options = list(ordinary)
+        for key in sorted(groups):
+            decision = self._batch_formation.evaluate(
+                current_time=self.current_time,
+                candidates=tuple(groups[key]),
+            )
+            timeout_key = (machine_id, key[0], key[1])
+            if decision.can_start:
+                representative = decision.selected_members[0]
+                options.append(action_by_lot[representative.lot_id])
+                decisions[representative.lot_id] = decision
+            elif decision.timeout_at is not None:
+                self._ensure_batch_timeout(
+                    timeout_key=timeout_key,
+                    timeout_at=decision.timeout_at,
+                )
+            else:
+                self._pending_batch_timeouts.pop(timeout_key, None)
+        return options, decisions
+
+    def _ensure_batch_timeout(
+        self,
+        *,
+        timeout_key: tuple[str, str, int],
+        timeout_at: float,
+    ) -> None:
+        existing = self._pending_batch_timeouts.get(timeout_key)
+        if existing is not None and existing[1] == timeout_at:
+            return
+        if timeout_at <= self.current_time:
+            raise SimulationError("Batch timeout 必须安排在未来")
+        token = self._next_batch_timeout_token
+        self._next_batch_timeout_token += 1
+        self._pending_batch_timeouts[timeout_key] = (token, timeout_at)
+        machine_id, route_id, step_id = timeout_key
+        self._schedule(
+            time=timeout_at,
+            event_type=EventType.BATCH_TIMEOUT,
+            entity_id=machine_id,
+            payload={
+                "machine_id": machine_id,
+                "route_id": route_id,
+                "step_id": step_id,
+                "token": token,
+            },
+        )
+
+    def _handle_batch_timeout(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        route_id = event.payload["route_id"]
+        step_id = event.payload["step_id"]
+        token = event.payload["token"]
+        timeout_key = (machine_id, route_id, step_id)
+        pending = self._pending_batch_timeouts.get(timeout_key)
+        if pending != (token, event.time):
+            self._record(
+                event_type="BATCH_TIMEOUT_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                machine_id=machine_id,
+                route_id=route_id,
+                step_id=step_id,
+                state_before="STALE_TOKEN",
+                state_after="NO_EFFECT",
+            )
+            return
+        self._pending_batch_timeouts.pop(timeout_key)
+        operation = next(
+            (
+                lot.spec.operations[lot.operation_index]
+                for lot in self._lots.values()
+                if lot.status is LotStatus.QUEUED
+                and (
+                    lot.spec.operations[lot.operation_index].route_id,
+                    lot.spec.operations[lot.operation_index].step_id,
+                )
+                == (route_id, step_id)
+                and machine_id
+                in lot.spec.operations[
+                    lot.operation_index
+                ].eligible_machines
+            ),
+            None,
+        )
+        self._record(
+            event_type="BATCH_TIMEOUT",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            operation=operation,
+            machine_id=machine_id,
+            route_id=route_id,
+            step_id=step_id,
+            state_before="WAITING_FOR_TARGET",
+            state_after="REEVALUATION_REQUESTED",
+        )
+        self._ensure_dispatch_barrier()
+
+    def _start_batch(
+        self,
+        barrier_event: Event,
+        machine_id: str,
+        decision: BatchDecision,
+    ) -> None:
+        machine = self._machines[machine_id]
+        if machine.status is not MachineStatus.IDLE:
+            raise SimulationError("Batch 提交时 machine 已不可用")
+        if machine.active_batch_id is not None or machine.lot_id is not None:
+            raise SimulationError("Batch 提交时 machine 已被占用")
+        if not decision.can_start or not decision.selected_members:
+            raise SimulationError("尝试提交不可启动的 batch decision")
+
+        selected = decision.selected_members
+        first_lot = self._lots[selected[0].lot_id]
+        first_operation = first_lot.spec.operations[
+            selected[0].operation_index
+        ]
+        spec = first_operation.batch_spec
+        if spec is None:
+            raise SimulationError("Batch decision 对应 operation 非 batch")
+        if not (
+            spec.minimum_wafers
+            <= decision.selected_wafers
+            <= spec.maximum_wafers
+        ):
+            raise SimulationError("Batch selected wafer 容量非法")
+
+        member_lots: list[_LotRuntime] = []
+        member_wafers: list[int] = []
+        operation_indices: list[int] = []
+        for candidate in selected:
+            lot = self._lots[candidate.lot_id]
+            if (
+                lot.status is not LotStatus.QUEUED
+                or lot.operation_index != candidate.operation_index
+                or lot.queue_entered_at != candidate.queue_entered_at
+            ):
+                raise SimulationError(
+                    f"Batch 原子提交时 lot 已不可用：{candidate.lot_id}"
+                )
+            operation = lot.spec.operations[lot.operation_index]
+            if machine_id not in operation.eligible_machines:
+                raise SimulationError("Batch member 不再满足设备资格")
+            if (
+                operation.route_id,
+                operation.step_id,
+            ) != decision.compatibility_key:
+                raise SimulationError("Batch member compatibility 已失效")
+            if operation.batch_spec != spec:
+                raise SimulationError("Batch member 配置不一致")
+            if (
+                operation.required_setup is not None
+                and operation.required_setup != machine.current_setup
+            ):
+                raise SimulationError(
+                    "Batch+Setup 联合路径尚未验证；MC04 必须无换型"
+                )
+            member_lots.append(lot)
+            member_wafers.append(lot.spec.quantity_wafers)
+            operation_indices.append(lot.operation_index)
+
+        batch_id = f"BATCH-{self._next_batch_seq:06d}"
+        self._next_batch_seq += 1
+        finish_time = self.current_time + first_operation.processing_time
+        active = _ActiveBatch(
+            batch_id=batch_id,
+            machine_id=machine_id,
+            member_lot_ids=tuple(lot.spec.lot_id for lot in member_lots),
+            member_wafers=tuple(member_wafers),
+            operation_indices=tuple(operation_indices),
+            route_id=first_operation.route_id,
+            step_id=first_operation.step_id,
+            total_wafers=decision.selected_wafers,
+            start_time=self.current_time,
+            scheduled_finish_time=finish_time,
+            start_reason=decision.start_reason,
+        )
+        timeout_key = (
+            machine_id,
+            first_operation.route_id,
+            first_operation.step_id,
+        )
+        self._pending_batch_timeouts.pop(timeout_key, None)
+
+        for lot in member_lots:
+            lot.status = LotStatus.RESERVED
+            lot.current_machine_id = machine_id
+            lot.queue_entered_at = None
+        machine.status = MachineStatus.PROCESSING
+        machine.processing_started_at = self.current_time
+        machine.active_batch_id = batch_id
+        self._active_batches[batch_id] = active
+
+        batch_trace = {
+            "batch_id": batch_id,
+            "batch_member_lot_ids": active.member_lot_ids,
+            "batch_member_wafers": active.member_wafers,
+            "batch_total_wafers": active.total_wafers,
+            "batch_start_reason": active.start_reason,
+        }
+        self._record(
+            event_type="BATCH_FORMED",
+            priority=barrier_event.priority,
+            cause_event_seq=barrier_event.seq,
+            operation=first_operation,
+            machine_id=machine_id,
+            state_before="COMPATIBLE_LOTS:QUEUED|MACHINE:IDLE",
+            state_after="BATCH:RESERVED|MACHINE:RESERVED",
+            **batch_trace,
+        )
+        self._record(
+            event_type="BATCH_START",
+            priority=barrier_event.priority,
+            cause_event_seq=barrier_event.seq,
+            operation=first_operation,
+            machine_id=machine_id,
+            state_before="BATCH:RESERVED|MACHINE:RESERVED",
+            state_after="BATCH:PROCESSING|MACHINE:PROCESSING",
+            **batch_trace,
+        )
+        for lot in member_lots:
+            operation = lot.spec.operations[lot.operation_index]
+            lot.status = LotStatus.PROCESSING
+            self._record(
+                event_type="PROCESS_START",
+                priority=barrier_event.priority,
+                cause_event_seq=barrier_event.seq,
+                lot=lot,
+                operation=operation,
+                machine_id=machine_id,
+                batch_id=batch_id,
+                state_before="LOT:RESERVED|BATCH:RESERVED",
+                state_after="LOT:PROCESSING|BATCH:PROCESSING",
+            )
+        self._schedule(
+            time=finish_time,
+            event_type=EventType.BATCH_FINISH,
+            entity_id=batch_id,
+            payload={"batch_id": batch_id},
+        )
+
     def _commit_dispatch(
         self,
         barrier_event: Event,
@@ -411,6 +784,10 @@ class Simulator:
         if machine.status is not MachineStatus.IDLE:
             raise SimulationError("原子提交时 machine 已不可用")
         operation = lot.spec.operations[lot.operation_index]
+        if operation.batch_spec is not None:
+            raise SimulationError("Batch operation 必须通过原子组批路径提交")
+        if machine.active_batch_id is not None:
+            raise SimulationError("普通派工时 machine 仍绑定 active batch")
         lot.status = LotStatus.RESERVED
         lot.current_machine_id = machine.machine_id
         lot.queue_entered_at = None
@@ -565,6 +942,7 @@ class Simulator:
         lot = self._lots[lot_id]
         if (
             machine.status is not MachineStatus.PROCESSING
+            or machine.active_batch_id is not None
             or machine.lot_id != lot_id
             or machine.operation_index != operation_index
             or lot.status is not LotStatus.PROCESSING
@@ -598,6 +976,113 @@ class Simulator:
         machine.lot_id = None
         machine.operation_index = None
         machine.processing_started_at = None
+        self._advance_lot_after_processing(
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            completed_operation=operation,
+        )
+        self._ensure_dispatch_barrier()
+
+    def _handle_batch_finish(self, event: Event) -> None:
+        batch_id = event.payload["batch_id"]
+        active = self._active_batches.get(batch_id)
+        if active is None:
+            raise SimulationError(f"未知或重复 BATCH_FINISH：{batch_id}")
+        machine = self._machines[active.machine_id]
+        if (
+            machine.status is not MachineStatus.PROCESSING
+            or machine.active_batch_id != batch_id
+            or machine.processing_started_at != active.start_time
+        ):
+            raise SimulationError(f"BATCH_FINISH machine 状态不一致：{batch_id}")
+        member_lots = [self._lots[lot_id] for lot_id in active.member_lot_ids]
+        for lot, operation_index in zip(
+            member_lots,
+            active.operation_indices,
+            strict=True,
+        ):
+            if (
+                lot.status is not LotStatus.PROCESSING
+                or lot.operation_index != operation_index
+                or lot.current_machine_id != active.machine_id
+            ):
+                raise SimulationError(
+                    f"BATCH_FINISH member 状态不一致：{lot.spec.lot_id}"
+                )
+        first_operation = member_lots[0].spec.operations[
+            active.operation_indices[0]
+        ]
+        self._batch_intervals.append(
+            BatchInterval(
+                batch_id=batch_id,
+                machine_id=active.machine_id,
+                member_lot_ids=active.member_lot_ids,
+                member_wafers=active.member_wafers,
+                route_id=active.route_id,
+                step_id=active.step_id,
+                total_wafers=active.total_wafers,
+                start=active.start_time,
+                finish=self.current_time,
+                start_reason=active.start_reason,
+            )
+        )
+        batch_trace = {
+            "batch_id": batch_id,
+            "batch_member_lot_ids": active.member_lot_ids,
+            "batch_member_wafers": active.member_wafers,
+            "batch_total_wafers": active.total_wafers,
+            "batch_start_reason": active.start_reason,
+        }
+        self._record(
+            event_type="BATCH_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            operation=first_operation,
+            machine_id=active.machine_id,
+            state_before="BATCH:PROCESSING|MACHINE:PROCESSING",
+            state_after="BATCH:FINISHED|MACHINE:IDLE",
+            **batch_trace,
+        )
+        machine.status = MachineStatus.IDLE
+        machine.processing_started_at = None
+        machine.active_batch_id = None
+        self._active_batches.pop(batch_id)
+        for lot, operation_index in zip(
+            member_lots,
+            active.operation_indices,
+            strict=True,
+        ):
+            operation = lot.spec.operations[operation_index]
+            self._record(
+                event_type="PROCESS_FINISH",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=operation,
+                machine_id=active.machine_id,
+                batch_id=batch_id,
+                state_before="LOT:PROCESSING|BATCH:PROCESSING",
+                state_after="LOT:PROCESSED|BATCH:FINISHED",
+            )
+            self._advance_lot_after_processing(
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                completed_operation=operation,
+                batch_id=batch_id,
+            )
+        self._ensure_dispatch_barrier()
+
+    def _advance_lot_after_processing(
+        self,
+        *,
+        priority: int,
+        cause_event_seq: int,
+        lot: _LotRuntime,
+        completed_operation: Any,
+        batch_id: str | None = None,
+    ) -> None:
         lot.current_machine_id = None
         lot.operation_index += 1
         if lot.operation_index == len(lot.spec.operations):
@@ -605,10 +1090,11 @@ class Simulator:
             lot.completion_time = self.current_time
             self._record(
                 event_type="LOT_COMPLETE",
-                priority=event.priority,
-                cause_event_seq=event.seq,
+                priority=priority,
+                cause_event_seq=cause_event_seq,
                 lot=lot,
-                operation=operation,
+                operation=completed_operation,
+                batch_id=batch_id,
                 state_before="PROCESSED",
                 state_after=LotStatus.COMPLETED.value,
             )
@@ -618,14 +1104,14 @@ class Simulator:
             lot.queue_entered_at = self.current_time
             self._record(
                 event_type="ROUTE_ADVANCE",
-                priority=event.priority,
-                cause_event_seq=event.seq,
+                priority=priority,
+                cause_event_seq=cause_event_seq,
                 lot=lot,
                 operation=next_operation,
+                batch_id=batch_id,
                 state_before="PROCESSED",
                 state_after=LotStatus.QUEUED.value,
             )
-        self._ensure_dispatch_barrier()
 
     def _ensure_dispatch_barrier(self) -> None:
         if self.current_time in self._pending_dispatch_barriers:
@@ -647,6 +1133,13 @@ class Simulator:
         lot: _LotRuntime | None = None,
         operation: Any | None = None,
         machine_id: str | None = None,
+        route_id: str | None = None,
+        step_id: int | None = None,
+        batch_id: str | None = None,
+        batch_member_lot_ids: tuple[str, ...] | None = None,
+        batch_member_wafers: tuple[int, ...] | None = None,
+        batch_total_wafers: int | None = None,
+        batch_start_reason: str | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -657,15 +1150,22 @@ class Simulator:
             priority=priority,
             event_type=event_type,
             lot_id=lot.spec.lot_id if lot is not None else None,
-            # MC01/MC02 没有返工，每道工序都是首次 visit。
+            # MC01-MC04 没有返工，每道工序都是首次 visit。
             # 后续解锁返工时改为按 (lot, step) 独立计数。
             visit_index=0 if lot is not None else None,
-            route_id=operation.route_id if operation is not None else None,
-            step_id=operation.step_id if operation is not None else None,
+            route_id=(
+                operation.route_id if operation is not None else route_id
+            ),
+            step_id=operation.step_id if operation is not None else step_id,
             machine_id=machine_id,
             tool_group_id=(
                 operation.tool_group_id if operation is not None else None
             ),
+            batch_id=batch_id,
+            batch_member_lot_ids=batch_member_lot_ids,
+            batch_member_wafers=batch_member_wafers,
+            batch_total_wafers=batch_total_wafers,
+            batch_start_reason=batch_start_reason,
             state_before=state_before,
             state_after=state_after,
             cause_event_seq=cause_event_seq,
@@ -717,6 +1217,10 @@ class Simulator:
             processing_by_machine[interval.machine_id] += (
                 interval.finish - interval.start
             )
+        for interval in self._batch_intervals:
+            processing_by_machine[interval.machine_id] += (
+                interval.finish - interval.start
+            )
         for interval in self._setup_intervals:
             setup_by_machine[interval.machine_id] += (
                 interval.finish - interval.start
@@ -749,6 +1253,7 @@ class Simulator:
                 ),
                 final_state=machine.status.value,
                 final_setup=machine.current_setup,
+                active_batch_id=machine.active_batch_id,
             )
             for machine_id, machine in sorted(self._machines.items())
         }

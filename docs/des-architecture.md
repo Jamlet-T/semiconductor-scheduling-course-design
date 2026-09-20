@@ -1,9 +1,9 @@
 # 可信轻量 DES 架构
 
 适用版本：Simulation Contract `0.1.0`  
-当前能力：Basic DES + 显式 Setup，已验证 MC01～MC03
+当前能力：Basic DES + 显式 Setup + 显式 Batch，已验证 MC01～MC04
 
-锁定能力：Batch、CQT、Dedication、Failure/PM、正式 SMT2020 loader
+锁定能力：CQT、Dedication、Failure/PM、正式 SMT2020 loader
 
 ## 1. 模块边界
 
@@ -13,6 +13,7 @@
 | 事件定义 | `simulation/events.py` | `Event(time, priority, seq, ...)`、契约优先级、审计 trace |
 | 事件内核 | `simulation/engine.py` | 日历推进、状态机、统一派工屏障、路线推进、终止和指标 |
 | Setup resolver | `simulation/setup.py` | 按冻结优先级唯一解析换型时长；缺失时明确失败 |
+| Batch formation | `simulation/batch.py` | compatibility 分组、wafer 容量、确定性成员选择与 timeout 决策 |
 | 随机流 | `simulation/random_streams.py` | 由 seed/stream/entity/occurrence 派生随机量 |
 | provenance | `simulation/provenance.py` | Contract、数据、commit、seed、配置、策略和终止条件 |
 | 派工接口 | `policies/base.py` | `DispatchPolicy.select(state, feasible_actions)` |
@@ -31,10 +32,14 @@ flowchart LR
     E --> F[生成可行动作]
     F --> G[策略选择]
     G --> H[中央原子提交]
-    H --> I{需要 Setup?}
-    I -- 是 --> J[SETTING_UP / SETUP_FINISH]
-    J --> K[PROCESSING / PROCESS_FINISH]
-    I -- 否 --> K
+    H --> I{普通工序或 Batch?}
+    I -- 普通工序 --> J{需要 Setup?}
+    J -- 是 --> L[SETTING_UP / SETUP_FINISH]
+    L --> K[PROCESSING / PROCESS_FINISH]
+    J -- 否 --> K
+    I -- Batch --> M[BATCH_FORMED / BATCH_START]
+    M --> N[BATCH_FINISH / 全体成员推进]
+    N --> A
     K --> A
 ```
 
@@ -49,8 +54,9 @@ flowchart LR
 Basic DES 当前启用：
 
 ```text
-PROCESS_FINISH / SETUP_FINISH priority=10
+PROCESS_FINISH / SETUP_FINISH / BATCH_FINISH priority=10
 LOT_RELEASE priority=40
+BATCH_TIMEOUT priority=50
 DISPATCH_BARRIER priority=60
 ```
 
@@ -65,6 +71,7 @@ UNRELEASED → QUEUED → RESERVED → PROCESSING → QUEUED ... → COMPLETED
 Machine:
 IDLE → PROCESSING → IDLE
 IDLE → SETTING_UP → PROCESSING → IDLE
+IDLE → PROCESSING(active_batch_id) → IDLE
 ```
 
 派工提交后，lot 与 machine 先被原子保留。内核集中调用 `SetupDurationResolver`：
@@ -78,6 +85,18 @@ operation.setup_override_minutes
 ```
 
 正时长 setup 产生独立 `SETUP_START` trace 和 `SETUP_FINISH` 日历事件；完成后先更新 `machine.current_setup`，再对已保留 lot 发出 `PROCESS_START`。FIFO 只选择可行动作，不包含 setup 判断。
+
+Batch 路径分为三层：
+
+```text
+Eligible: 当前 operation 可由 machine 加工
+Compatible: crit_sameroutestep，即 route_id + step_id 相同
+Selected: 按 queue_entered_at、lot_id 稳定排序，累计 wafer 不超过 B_max
+```
+
+`BatchFormation` 先检查 `B_min`，再检查 `B_target` 或真实最老等待是否达到 `T_max`。达到合法最小容量但尚未达到目标时，内核安排 `BATCH_TIMEOUT`；该事件仅请求重新评价，不直接启动。token 已失效的 stale timeout 记录为无副作用事件。Batch ID 使用仿真内单调序号 `BATCH-000001`。
+
+一个 Batch 只产生一次物理 `BATCH_START/BATCH_FINISH` 和一个 `BatchInterval`。成员共享起止时刻，每个 lot 的 `PROCESS_START/PROCESS_FINISH` 通过同一 `batch_id` 关联。machine 使用普通 `PROCESSING` 与 `active_batch_id` 表示批占用，不增加重复的 BATCHING 状态。
 
 lot 完成一道工序时：
 
@@ -94,7 +113,7 @@ lot 完成一道工序时：
 - `until_all_complete`：所有场景 lot 完成；事件日历提前耗尽时抛出 `SimulationError`，不返回伪完成结果。
 - `fixed_horizon`：处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP。
 
-MC01～MC03 使用 `until_all_complete`；另有独立测试验证 fixed horizon 截断，包括正在进行的 setup。
+MC01～MC04 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断正在进行的 setup 和 batch。
 
 ## 5. Trace 与结果
 
@@ -104,10 +123,12 @@ MC01～MC03 使用 `until_all_complete`；另有独立测试验证 fixed horizon
 run_id, event_seq, sim_time, priority, event_type,
 lot_id, visit_index, route_id, step_id,
 machine_id, tool_group_id, batch_id,
+batch_member_lot_ids, batch_member_wafers,
+batch_total_wafers, batch_start_reason,
 state_before, state_after, cause_event_seq
 ```
 
-`key_trace()` 保留人工核算所需的 `LOT_RELEASE / DISPATCH / SETUP_START / SETUP_FINISH / PROCESS_START / PROCESS_FINISH / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER`。
+`key_trace()` 保留人工核算所需的 `LOT_RELEASE / DISPATCH / SETUP_START / SETUP_FINISH / BATCH_TIMEOUT / BATCH_FORMED / BATCH_START / BATCH_FINISH / PROCESS_START / PROCESS_FINISH / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER` 和 `BATCH_TIMEOUT_STALE`。
 
 当前 KPI：
 
@@ -120,6 +141,8 @@ state_before, state_after, cause_event_seq
 
 `MachineStatistics` 分开记录 `processing_time`、`setup_time` 和 `idle_time`。固定 horizon 截断正在进行的 setup 时，已占用部分只累计到 `setup_time`；不会进入 `processing_time`。Lot cycle time 仍为 `completion-release`，因此实际经历的 setup 会自然计入。
 
+`BatchInterval` 记录 batch identity、machine、成员及 wafer 数、route/step、启动原因和物理起止。fixed horizon 截断活动 batch 时使用 `ActiveBatchSnapshot` 保留成员、开始和计划完成时刻，成员继续计入 terminal WIP。
+
 每个结果始终包含 `simulation_contract_version`、`dataset_version`、`git_commit`、`seed`、配置摘要、策略和终止条件。
 
 ## 6. 当前验证边界
@@ -130,14 +153,17 @@ state_before, state_after, cause_event_seq
 | 动态 release | VERIFIED | MC02 |
 | FIFO queue | VERIFIED | MC02 |
 | route progression | VERIFIED | MC01 |
-| machine 占用区间 | VERIFIED | MC01～MC03 |
-| all-complete termination | VERIFIED | MC01～MC03 |
-| fixed horizon | VERIFIED | 独立 terminal WIP 测试 |
+| machine 占用区间 | VERIFIED | MC01～MC04 |
+| all-complete termination | VERIFIED | MC01～MC04 |
+| fixed horizon | VERIFIED | 普通加工、Setup、Batch terminal WIP 测试 |
 | 实体索引随机流 | VERIFIED | 调用顺序独立性测试 |
 | provenance | VERIFIED | 必填字段测试 |
 | Setup resolver 优先级与缺失错误 | VERIFIED | resolver 单元测试 |
 | Setup 状态、事件、占用与 setup identity | VERIFIED | MC03 |
 | MC03 确定性与 Setup provenance | VERIFIED | 重复运行与配置断言 |
-| Batch 及以后机制 | LOCKED | 不得进入运行路径 |
+| Batch wafer 容量与 compatibility | VERIFIED | MC04 与边界测试 |
+| Batch timeout、stale token、同刻排序 | VERIFIED | MC04 timeout 测试 |
+| Batch fixed horizon 与单次机器占用 | VERIFIED | active batch 快照与统计测试 |
+| CQT 及以后机制 | LOCKED | 不得进入运行路径 |
 
-MC04 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。
+MC05 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。
