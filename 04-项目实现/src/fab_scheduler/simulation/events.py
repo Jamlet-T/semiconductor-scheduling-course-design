@@ -20,12 +20,14 @@ class EventPriority(IntEnum):
 
 class EventType(str, Enum):
     PROCESS_FINISH = "PROCESS_FINISH"
+    SETUP_FINISH = "SETUP_FINISH"
     LOT_RELEASE = "LOT_RELEASE"
     DISPATCH_BARRIER = "DISPATCH_BARRIER"
 
 
 EVENT_PRIORITIES = {
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.SETUP_FINISH: EventPriority.PROCESS_FINISH,
     EventType.LOT_RELEASE: EventPriority.LOT_RELEASE,
     EventType.DISPATCH_BARRIER: EventPriority.DISPATCH_BARRIER,
 }

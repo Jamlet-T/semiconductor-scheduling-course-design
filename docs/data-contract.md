@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前只有 Basic DES 对应的 MC01、MC02进入实现；Setup、Batch、CQT、Dedication、Failure/PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02 与 Setup 的 MC03 已进入实现并验证；Batch、CQT、Dedication、Failure/PM 仍不得用于正式实验。
 
 ## 1. 证据层级与统一约定
 
@@ -182,7 +182,7 @@ route.STIME
 → 数据契约错误
 ```
 
-机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。实现前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。
+机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 SMT2020 loader 的 setup group 映射仍未实现。
 
 ## 9. CQT
 

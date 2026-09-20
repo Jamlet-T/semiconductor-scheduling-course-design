@@ -53,6 +53,8 @@ L2: release=5, process=10
 
 ### MC03：有向 Setup
 
+实现状态：`VERIFIED`（逐事件 trace、占用区间、KPI 与确定性测试已通过）。
+
 ```text
 M1 initial_recipe=A
 L1: recipe=A, process=10, release=0

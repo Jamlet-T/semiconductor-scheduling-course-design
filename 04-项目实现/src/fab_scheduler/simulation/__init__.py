@@ -1,6 +1,9 @@
 """离散事件仿真内核。"""
 
 from fab_scheduler.simulation.engine import (
+    MachineStatistics,
+    ProcessingInterval,
+    SetupInterval,
     SimulationError,
     SimulationMetrics,
     SimulationResult,
@@ -8,6 +11,9 @@ from fab_scheduler.simulation.engine import (
 )
 
 __all__ = [
+    "MachineStatistics",
+    "ProcessingInterval",
+    "SetupInterval",
     "SimulationError",
     "SimulationMetrics",
     "SimulationResult",

@@ -14,6 +14,7 @@ class MachineSpec:
     """一台可独立占用的物理设备。"""
 
     machine_id: str
+    initial_setup: str = ""
 
     def __post_init__(self) -> None:
         if not self.machine_id:
@@ -29,6 +30,8 @@ class OperationSpec:
     eligible_machines: tuple[str, ...]
     route_id: str = "micro"
     tool_group_id: str | None = None
+    required_setup: str | None = None
+    setup_override_minutes: float | None = None
 
     def __post_init__(self) -> None:
         if self.step_id < 1:
@@ -39,6 +42,30 @@ class OperationSpec:
             raise ValueError("eligible_machines 不能为空")
         if len(self.eligible_machines) != len(set(self.eligible_machines)):
             raise ValueError("eligible_machines 不能重复")
+        if self.required_setup == "":
+            raise ValueError("无 setup 要求应使用 None，而不是空字符串")
+        if self.setup_override_minutes is not None:
+            if self.required_setup is None:
+                raise ValueError(
+                    "setup_override_minutes 必须对应 required_setup"
+                )
+            if self.setup_override_minutes <= 0:
+                raise ValueError("setup_override_minutes 必须为正")
+
+
+@dataclass(frozen=True, slots=True)
+class SetupTransition:
+    """有向 setup 转移时长。空 from_setup 表示冻结的初始 fallback。"""
+
+    from_setup: str
+    to_setup: str
+    duration: float
+
+    def __post_init__(self) -> None:
+        if not self.to_setup:
+            raise ValueError("to_setup 不能为空")
+        if self.duration <= 0:
+            raise ValueError("setup duration 必须为正")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +103,7 @@ class Scenario:
     lots: tuple[LotSpec, ...]
     termination_mode: TerminationMode = "until_all_complete"
     horizon: float | None = None
+    setup_transitions: tuple[SetupTransition, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -101,3 +129,9 @@ class Scenario:
                 raise ValueError("fixed_horizon 必须提供非负 horizon")
         elif self.horizon is not None:
             raise ValueError("until_all_complete 不应设置 horizon")
+        transition_keys = [
+            (transition.from_setup, transition.to_setup)
+            for transition in self.setup_transitions
+        ]
+        if len(transition_keys) != len(set(transition_keys)):
+            raise ValueError("setup transition 不能重复")

@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-**已实现：** Python 3.11+ 的最小可安装包、Data Contract、事件日历、动态投放、设备/队列状态、FIFO 派工、确定性加工、路线推进、实体索引随机流、provenance 和事件 trace。MC01、MC02 已逐事件验证；MC03～MC08、高级机制和正式数据实验尚未实现。
+**已实现：** Python 3.11+ 的最小可安装包、Data Contract、事件日历、动态投放、设备/队列状态、FIFO 派工、确定性加工、路线推进、显式 Setup 状态与事件、实体索引随机流、provenance 和事件 trace。MC01～MC03 已逐事件验证；MC04～MC08、高级机制和正式数据实验尚未实现。
 
-**计划中：** 按 Setup → Batch → CQT → Dedication → Failure/PM 逐项解锁剩余 micro case；8 个算例全部通过后再运行 HVLM/LVHM，M1 通过后才允许 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
+**计划中：** 后续按 Batch → CQT → Dedication → Failure/PM 逐项解锁剩余 micro case；8 个算例全部通过后再运行 HVLM/LVHM，M1 通过后才允许 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
 
 ## 数据与教学材料
 

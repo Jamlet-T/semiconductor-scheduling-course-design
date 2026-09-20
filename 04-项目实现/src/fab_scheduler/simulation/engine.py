@@ -1,7 +1,7 @@
 """可信轻量 DES 内核的第一阶段实现。
 
-当前仅覆盖 MC01、MC02：动态投放、等待队列、FIFO 派工、确定性加工、
-路线推进和终止。Batch、Setup、CQT、Dedication、Failure/PM 尚未解锁。
+当前覆盖 MC01-MC03：动态投放、等待队列、FIFO 派工、确定性加工、
+路线推进、显式 Setup 和终止。Batch、CQT、Dedication、Failure/PM 尚未解锁。
 """
 
 from __future__ import annotations
@@ -31,17 +31,20 @@ from fab_scheduler.simulation.provenance import (
     discover_git_commit,
 )
 from fab_scheduler.simulation.random_streams import EntityRandomStreams
+from fab_scheduler.simulation.setup import SetupDurationResolver
 
 
 class LotStatus(str, Enum):
     UNRELEASED = "UNRELEASED"
     QUEUED = "QUEUED"
+    RESERVED = "RESERVED"
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
 
 
 class MachineStatus(str, Enum):
     IDLE = "IDLE"
+    SETTING_UP = "SETTING_UP"
     PROCESSING = "PROCESSING"
 
 
@@ -58,9 +61,13 @@ class _LotRuntime:
 @dataclass(slots=True)
 class _MachineRuntime:
     machine_id: str
+    current_setup: str = ""
     status: MachineStatus = MachineStatus.IDLE
     lot_id: str | None = None
     operation_index: int | None = None
+    setup_started_at: float | None = None
+    setup_from: str | None = None
+    setup_to: str | None = None
     processing_started_at: float | None = None
 
 
@@ -72,6 +79,28 @@ class ProcessingInterval:
     step_id: int
     start: float
     finish: float
+
+
+@dataclass(frozen=True, slots=True)
+class SetupInterval:
+    lot_id: str
+    machine_id: str
+    route_id: str
+    step_id: int
+    from_setup: str
+    to_setup: str
+    start: float
+    finish: float
+
+
+@dataclass(frozen=True, slots=True)
+class MachineStatistics:
+    machine_id: str
+    processing_time: float
+    setup_time: float
+    idle_time: float
+    final_state: str
+    final_setup: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +123,8 @@ class SimulationResult:
     metrics: SimulationMetrics
     trace: tuple[TraceRecord, ...]
     processing_intervals: tuple[ProcessingInterval, ...]
+    setup_intervals: tuple[SetupInterval, ...]
+    machine_statistics: dict[str, MachineStatistics]
     completion_times: dict[str, float]
 
     def trace_as_dicts(self) -> list[dict[str, Any]]:
@@ -105,6 +136,8 @@ class SimulationResult:
         visible = {
             "LOT_RELEASE",
             "DISPATCH",
+            "SETUP_START",
+            "SETUP_FINISH",
             "PROCESS_START",
             "PROCESS_FINISH",
             "ROUTE_ADVANCE",
@@ -156,12 +189,19 @@ class Simulator:
         self._pending_dispatch_barriers: set[float] = set()
         self._trace: list[TraceRecord] = []
         self._processing_intervals: list[ProcessingInterval] = []
+        self._setup_intervals: list[SetupInterval] = []
+        self._setup_resolver = SetupDurationResolver(
+            scenario.setup_transitions
+        )
         self._lots = {
             lot.lot_id: _LotRuntime(spec=lot)
             for lot in scenario.lots
         }
         self._machines = {
-            machine.machine_id: _MachineRuntime(machine_id=machine.machine_id)
+            machine.machine_id: _MachineRuntime(
+                machine_id=machine.machine_id,
+                current_setup=machine.initial_setup,
+            )
             for machine in scenario.machines
         }
         self._run_id = f"{scenario.scenario_id}:seed={seed}"
@@ -192,6 +232,7 @@ class Simulator:
         assert end_time is not None
         self.current_time = end_time
         metrics = self._build_metrics(end_time)
+        machine_statistics = self._build_machine_statistics(end_time)
         provenance = RunProvenance(
             simulation_contract_version=SIMULATION_CONTRACT_VERSION,
             dataset_version=self.scenario.dataset_version,
@@ -215,6 +256,8 @@ class Simulator:
             metrics=metrics,
             trace=tuple(self._trace),
             processing_intervals=tuple(self._processing_intervals),
+            setup_intervals=tuple(self._setup_intervals),
+            machine_statistics=machine_statistics,
             completion_times=completion_times,
         )
 
@@ -284,6 +327,8 @@ class Simulator:
             self._handle_release(event)
         elif event.event_type is EventType.PROCESS_FINISH:
             self._handle_process_finish(event)
+        elif event.event_type is EventType.SETUP_FINISH:
+            self._handle_setup_finish(event)
         elif event.event_type is EventType.DISPATCH_BARRIER:
             self._handle_dispatch_barrier(event)
         else:
@@ -329,7 +374,7 @@ class Simulator:
                 continue
             if action not in actions:
                 raise SimulationError("策略返回了不可行动作")
-            self._start_processing(event, action)
+            self._commit_dispatch(event, action)
 
     def _feasible_actions(self, machine_id: str) -> list[DispatchAction]:
         actions = []
@@ -354,7 +399,7 @@ class Simulator:
             )
         return actions
 
-    def _start_processing(
+    def _commit_dispatch(
         self,
         barrier_event: Event,
         action: DispatchAction,
@@ -366,13 +411,11 @@ class Simulator:
         if machine.status is not MachineStatus.IDLE:
             raise SimulationError("原子提交时 machine 已不可用")
         operation = lot.spec.operations[lot.operation_index]
-        lot.status = LotStatus.PROCESSING
+        lot.status = LotStatus.RESERVED
         lot.current_machine_id = machine.machine_id
         lot.queue_entered_at = None
-        machine.status = MachineStatus.PROCESSING
         machine.lot_id = lot.spec.lot_id
         machine.operation_index = lot.operation_index
-        machine.processing_started_at = self.current_time
         self._record(
             event_type="DISPATCH",
             priority=barrier_event.priority,
@@ -383,10 +426,68 @@ class Simulator:
             state_before="LOT:QUEUED|MACHINE:IDLE",
             state_after="LOT:RESERVED|MACHINE:RESERVED",
         )
+        setup_duration = self._setup_resolver.resolve(
+            current_setup=machine.current_setup,
+            operation=operation,
+        )
+        if setup_duration > 0:
+            required_setup = operation.required_setup
+            if required_setup is None:
+                raise SimulationError("正 setup 时长缺少 required_setup")
+            machine.status = MachineStatus.SETTING_UP
+            machine.setup_started_at = self.current_time
+            machine.setup_from = machine.current_setup
+            machine.setup_to = required_setup
+            self._record(
+                event_type="SETUP_START",
+                priority=barrier_event.priority,
+                cause_event_seq=barrier_event.seq,
+                lot=lot,
+                operation=operation,
+                machine_id=machine.machine_id,
+                state_before="LOT:RESERVED|MACHINE:RESERVED",
+                state_after="LOT:RESERVED|MACHINE:SETTING_UP",
+            )
+            self._schedule(
+                time=self.current_time + setup_duration,
+                event_type=EventType.SETUP_FINISH,
+                entity_id=machine.machine_id,
+                payload={
+                    "machine_id": machine.machine_id,
+                    "lot_id": lot.spec.lot_id,
+                    "operation_index": lot.operation_index,
+                    "from_setup": machine.setup_from,
+                    "to_setup": required_setup,
+                },
+            )
+            return
+        self._begin_processing(
+            cause_event_seq=barrier_event.seq,
+            priority=barrier_event.priority,
+            lot=lot,
+            machine=machine,
+        )
+
+    def _begin_processing(
+        self,
+        *,
+        cause_event_seq: int,
+        priority: int,
+        lot: _LotRuntime,
+        machine: _MachineRuntime,
+    ) -> None:
+        if lot.status is not LotStatus.RESERVED:
+            raise SimulationError("加工开始时 lot 未被保留")
+        if machine.lot_id != lot.spec.lot_id:
+            raise SimulationError("加工开始时 machine 未保留该 lot")
+        operation = lot.spec.operations[lot.operation_index]
+        lot.status = LotStatus.PROCESSING
+        machine.status = MachineStatus.PROCESSING
+        machine.processing_started_at = self.current_time
         self._record(
             event_type="PROCESS_START",
-            priority=barrier_event.priority,
-            cause_event_seq=barrier_event.seq,
+            priority=priority,
+            cause_event_seq=cause_event_seq,
             lot=lot,
             operation=operation,
             machine_id=machine.machine_id,
@@ -402,6 +503,58 @@ class Simulator:
                 "lot_id": lot.spec.lot_id,
                 "operation_index": lot.operation_index,
             },
+        )
+
+    def _handle_setup_finish(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        lot_id = event.payload["lot_id"]
+        operation_index = event.payload["operation_index"]
+        machine = self._machines[machine_id]
+        lot = self._lots[lot_id]
+        if (
+            machine.status is not MachineStatus.SETTING_UP
+            or machine.lot_id != lot_id
+            or machine.operation_index != operation_index
+            or lot.status is not LotStatus.RESERVED
+            or lot.operation_index != operation_index
+            or machine.setup_started_at is None
+            or machine.setup_from != event.payload["from_setup"]
+            or machine.setup_to != event.payload["to_setup"]
+        ):
+            raise SimulationError(f"SETUP_FINISH 状态不一致：{event.payload}")
+        operation = lot.spec.operations[operation_index]
+        self._setup_intervals.append(
+            SetupInterval(
+                lot_id=lot_id,
+                machine_id=machine_id,
+                route_id=operation.route_id,
+                step_id=operation.step_id,
+                from_setup=machine.setup_from,
+                to_setup=machine.setup_to,
+                start=machine.setup_started_at,
+                finish=self.current_time,
+            )
+        )
+        self._record(
+            event_type="SETUP_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine_id,
+            state_before="LOT:RESERVED|MACHINE:SETTING_UP",
+            state_after="LOT:RESERVED|MACHINE:READY",
+        )
+        machine.current_setup = machine.setup_to
+        machine.status = MachineStatus.IDLE
+        machine.setup_started_at = None
+        machine.setup_from = None
+        machine.setup_to = None
+        self._begin_processing(
+            cause_event_seq=event.seq,
+            priority=event.priority,
+            lot=lot,
+            machine=machine,
         )
 
     def _handle_process_finish(self, event: Event) -> None:
@@ -549,3 +702,53 @@ class Simulator:
             terminal_wip_lots=len(released) - len(completed),
             end_time=end_time,
         )
+
+    def _build_machine_statistics(
+        self,
+        end_time: float,
+    ) -> dict[str, MachineStatistics]:
+        processing_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
+        setup_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
+        for interval in self._processing_intervals:
+            processing_by_machine[interval.machine_id] += (
+                interval.finish - interval.start
+            )
+        for interval in self._setup_intervals:
+            setup_by_machine[interval.machine_id] += (
+                interval.finish - interval.start
+            )
+        for machine_id, machine in self._machines.items():
+            if (
+                machine.status is MachineStatus.PROCESSING
+                and machine.processing_started_at is not None
+            ):
+                processing_by_machine[machine_id] += (
+                    end_time - machine.processing_started_at
+                )
+            elif (
+                machine.status is MachineStatus.SETTING_UP
+                and machine.setup_started_at is not None
+            ):
+                setup_by_machine[machine_id] += (
+                    end_time - machine.setup_started_at
+                )
+        return {
+            machine_id: MachineStatistics(
+                machine_id=machine_id,
+                processing_time=processing_by_machine[machine_id],
+                setup_time=setup_by_machine[machine_id],
+                idle_time=max(
+                    0.0,
+                    end_time
+                    - processing_by_machine[machine_id]
+                    - setup_by_machine[machine_id],
+                ),
+                final_state=machine.status.value,
+                final_setup=machine.current_setup,
+            )
+            for machine_id, machine in sorted(self._machines.items())
+        }

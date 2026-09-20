@@ -3,7 +3,7 @@
   "contract_version": "0.1.0",
   "event_priority_contract_version": "0.1.0",
   "time_unit": "minute",
-  "status": "mc01_mc02_verified",
+  "status": "mc01_mc03_verified",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
@@ -72,7 +72,7 @@
     },
     {
       "id": "MC03_SEQUENCE_SETUP",
-      "implementation_status": "locked",
+      "implementation_status": "verified",
       "purpose": "有向换型与设备占用",
       "policy": "FIFO",
       "termination": {"mode": "until_all_complete"},
@@ -84,13 +84,46 @@
         {"id": "L1", "release": 0, "recipe": "A", "process": 10},
         {"id": "L2", "release": 0, "recipe": "B", "process": 10}
       ],
+      "expected_trace": [
+        {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+        {"time": 0, "event": "LOT_RELEASE", "lot": "L2", "step": 1},
+        {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 10, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 10, "event": "LOT_COMPLETE", "lot": "L1", "step": 1},
+        {"time": 10, "event": "DISPATCH", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 10, "event": "SETUP_START", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 15, "event": "SETUP_FINISH", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 15, "event": "PROCESS_START", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 25, "event": "PROCESS_FINISH", "lot": "L2", "machine": "M1", "step": 1},
+        {"time": 25, "event": "LOT_COMPLETE", "lot": "L2", "step": 1}
+      ],
       "expected": {
         "intervals": [
           {"type": "PROCESS", "lot": "L1", "start": 0, "finish": 10},
           {"type": "SETUP", "machine": "M1", "start": 10, "finish": 15},
           {"type": "PROCESS", "lot": "L2", "start": 15, "finish": 25}
         ],
-        "setup_count": 1
+        "setup_count": 1,
+        "completion": {"L1": 10, "L2": 25},
+        "final_machine_setup": {"M1": "B"},
+        "machine_statistics": {
+          "M1": {
+            "processing_time": 20,
+            "setup_time": 5,
+            "idle_time": 0,
+            "final_state": "IDLE"
+          }
+        },
+        "metrics": {
+          "completed_lots": 2,
+          "released_lots": 2,
+          "completion_ratio": 1,
+          "mean_cycle_time_completed": 17.5,
+          "throughput_lots_per_minute": 0.08,
+          "terminal_wip_lots": 0,
+          "end_time": 25
+        }
       }
     },
     {
