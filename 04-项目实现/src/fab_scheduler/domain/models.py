@@ -35,6 +35,26 @@ class CQTSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class DedicationSpec:
+    """从建立工序绑定到未来强制工序的物理机约束。"""
+
+    dedication_id: str
+    route_id: str
+    source_step_id: int
+    target_step_id: int
+
+    def __post_init__(self) -> None:
+        if not self.dedication_id:
+            raise ValueError("Dedication dedication_id 不能为空")
+        if not self.route_id:
+            raise ValueError("Dedication route_id 不能为空")
+        if self.source_step_id < 1 or self.target_step_id < 1:
+            raise ValueError("Dedication step_id 必须从 1 开始")
+        if self.target_step_id <= self.source_step_id:
+            raise ValueError("Dedication target step 必须晚于 source step")
+
+
+@dataclass(frozen=True, slots=True)
 class MachineSpec:
     """一台可独立占用的物理设备。"""
 
@@ -138,6 +158,8 @@ class LotSpec:
     quantity_wafers: int = 25
     due_time: float | None = None
     priority: int = 0
+    is_initial_wip: bool = False
+    initial_operation_index: int = 0
 
     def __post_init__(self) -> None:
         if not self.lot_id:
@@ -151,6 +173,12 @@ class LotSpec:
         step_ids = [operation.step_id for operation in self.operations]
         if len(step_ids) != len(set(step_ids)):
             raise ValueError("同一路线的 step_id 不能重复")
+        if not 0 <= self.initial_operation_index < len(self.operations):
+            raise ValueError("initial_operation_index 超出路线范围")
+        if not self.is_initial_wip and self.initial_operation_index != 0:
+            raise ValueError("非初始 WIP 必须从路线首工序开始")
+        if self.is_initial_wip and self.release_time != 0:
+            raise ValueError("初始 WIP 必须在 t=0 进入系统")
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +193,7 @@ class Scenario:
     horizon: float | None = None
     setup_transitions: tuple[SetupTransition, ...] = ()
     cqt_constraints: tuple[CQTSpec, ...] = ()
+    dedication_constraints: tuple[DedicationSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -222,5 +251,27 @@ class Scenario:
             if missing:
                 raise ValueError(
                     f"CQT {constraint.constraint_id} 引用了 route 中不存在的 "
+                    f"step {sorted(missing)}"
+                )
+        dedication_ids = [
+            constraint.dedication_id
+            for constraint in self.dedication_constraints
+        ]
+        if len(dedication_ids) != len(set(dedication_ids)):
+            raise ValueError("Dedication dedication_id 不能重复")
+        for constraint in self.dedication_constraints:
+            known_steps = route_steps.get(constraint.route_id)
+            if known_steps is None:
+                raise ValueError(
+                    f"Dedication {constraint.dedication_id} 引用了未知 route "
+                    f"{constraint.route_id}"
+                )
+            missing = {
+                constraint.source_step_id,
+                constraint.target_step_id,
+            } - known_steps
+            if missing:
+                raise ValueError(
+                    f"Dedication {constraint.dedication_id} 引用了 route 中不存在的 "
                     f"step {sorted(missing)}"
                 )

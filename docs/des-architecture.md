@@ -1,9 +1,9 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.0`  
-当前能力：Basic DES + 显式 Setup + 显式 Batch + 跨步 CQT，已验证 MC01～MC05
+适用版本：Simulation Contract `0.1.1`
+当前能力：Basic DES + 显式 Setup + 显式 Batch + 跨步 CQT + 物理机 Dedication，已验证 MC01～MC06
 
-锁定能力：Dedication、Failure/PM、正式 SMT2020 loader
+锁定能力：Failure/PM、正式 SMT2020 loader
 
 ## 1. 模块边界
 
@@ -15,6 +15,7 @@
 | Setup resolver | `simulation/setup.py` | 按冻结优先级唯一解析换型时长；缺失时明确失败 |
 | Batch formation | `simulation/batch.py` | compatibility 分组、wafer 容量、确定性成员选择与 timeout 决策 |
 | CQT runtime | `simulation/cqt.py` | 独立约束索引、活动时钟、闭合记录、slack/risk 与期末暴露 |
+| Dedication runtime | `simulation/dedication.py` | 物理机绑定、硬可行性过滤、生命周期与初始 WIP 缺口审计 |
 | 随机流 | `simulation/random_streams.py` | 由 seed/stream/entity/occurrence 派生随机量 |
 | provenance | `simulation/provenance.py` | Contract、数据、commit、seed、配置、策略和终止条件 |
 | 派工接口 | `policies/base.py` | `DispatchPolicy.select(state, feasible_actions)` |
@@ -103,6 +104,10 @@ CQT 在领域层使用 `CQTSpec(constraint_id, route_id, source_step_id, target_
 
 CQT 不安排 deadline 日历事件，也不强制派工或抢占。活动时钟按需返回 `slack=limit-(t-opened_at)` 与 `risk=(t-opened_at)/limit`。fixed horizon 时，仍开放的时钟进入 `TerminalCQTSnapshot`，并将 `max(0, horizon-deadline)` 单列为 terminal exposure。
 
+Dedication 使用 `DedicationSpec(dedication_id, route_id, source_step_id, target_step_id)`。`_eligible_actions()` 先检查普通 qualification，再调用只读 `DedicationRuntime.allows_machine()`；因此 BatchFormation 看到的也是已通过绑定约束的 lot。source step 的动作真正提交、lot 进入 `RESERVED` 后，内核才建立 `(lot_id, dedication_id, visit_index) → machine_id`。target machine 忙时保持排队，不向同组空闲机 fallback；target `PROCESS_FINISH` 后记录 `DEDICATION_RELEASE`。候选枚举、策略排序和被拒动作不会改变 runtime。
+
+初始 WIP 若已经越过 source、尚未完成 target，则不猜测历史 machine。`LOT_RELEASE` 时记录 `DEDICATION_HISTORY_UNKNOWN` 与 `initial_wip_missing_dedication`，该 target 仅按普通 qualification 派工。fixed horizon 不清除活动绑定，结果通过 `active_dedication_bindings` 保留 terminal state。
+
 lot 完成一道工序时：
 
 1. 记录 `PROCESS_FINISH` 和设备占用区间；
@@ -118,7 +123,7 @@ lot 完成一道工序时：
 - `until_all_complete`：所有场景 lot 完成；事件日历提前耗尽时抛出 `SimulationError`，不返回伪完成结果。
 - `fixed_horizon`：处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP。
 
-MC01～MC05 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断正在进行的 setup、batch，以及开放 CQT 的安全/超期状态。
+MC01～MC06 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断正在进行的 setup、batch、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
 
 ## 5. Trace 与结果
 
@@ -133,10 +138,13 @@ batch_total_wafers, batch_start_reason,
 cqt_constraint_id, cqt_source_step_id, cqt_target_step_id,
 cqt_limit, cqt_opened_at, cqt_deadline, cqt_closed_at,
 cqt_actual_duration, cqt_slack, cqt_violation, cqt_excess_duration,
+dedication_id, dedication_source_step_id, dedication_target_step_id,
+dedication_bound_machine_id, dedication_established_at,
+dedication_released_at, dedication_audit_reason,
 state_before, state_after, cause_event_seq
 ```
 
-`key_trace()` 保留人工核算所需的 `LOT_RELEASE / DISPATCH / SETUP_START / SETUP_FINISH / BATCH_TIMEOUT / BATCH_FORMED / BATCH_START / BATCH_FINISH / PROCESS_START / PROCESS_FINISH / CQT_OPEN / CQT_CLOSE / CQT_VIOLATION / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER` 和 `BATCH_TIMEOUT_STALE`。
+`key_trace()` 保留人工核算所需的 `LOT_RELEASE / DISPATCH / SETUP_START / SETUP_FINISH / BATCH_TIMEOUT / BATCH_FORMED / BATCH_START / BATCH_FINISH / PROCESS_START / PROCESS_FINISH / CQT_OPEN / CQT_CLOSE / CQT_VIOLATION / DEDICATION_BIND / DEDICATION_RELEASE / DEDICATION_HISTORY_UNKNOWN / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER` 和 `BATCH_TIMEOUT_STALE`。
 
 当前 KPI：
 
@@ -148,6 +156,8 @@ state_before, state_after, cause_event_seq
 - simulation end time。
 
 CQT 结果另含 closed count、已闭合 violation count、total/max excess、open count、overdue open count 与 terminal exposure。已闭合违规和期末仍开放且超期的窗口分开统计，CQT 不改变生产 KPI 定义。
+
+Dedication 结果包含已释放 binding records、期末 active binding snapshots、初始 WIP 历史缺口 audits，以及 binding/released/active/initial-unknown 计数；不改变 throughput、cycle time、CQT 或 terminal WIP 定义。
 
 `MachineStatistics` 分开记录 `processing_time`、`setup_time` 和 `idle_time`。固定 horizon 截断正在进行的 setup 时，已占用部分只累计到 `setup_time`；不会进入 `processing_time`。Lot cycle time 仍为 `completion-release`，因此实际经历的 setup 会自然计入。
 
@@ -163,8 +173,8 @@ CQT 结果另含 closed count、已闭合 violation count、total/max excess、o
 | 动态 release | VERIFIED | MC02 |
 | FIFO queue | VERIFIED | MC02 |
 | route progression | VERIFIED | MC01 |
-| machine 占用区间 | VERIFIED | MC01～MC05 |
-| all-complete termination | VERIFIED | MC01～MC05 |
+| machine 占用区间 | VERIFIED | MC01～MC06 |
+| all-complete termination | VERIFIED | MC01～MC06 |
 | fixed horizon | VERIFIED | 普通加工、Setup、Batch terminal WIP 测试 |
 | 实体索引随机流 | VERIFIED | 调用顺序独立性测试 |
 | provenance | VERIFIED | 必填字段测试 |
@@ -178,6 +188,9 @@ CQT 结果另含 closed count、已闭合 violation count、total/max excess、o
 | 多 CQT 时钟、slack/risk 与非法重复开闭 | VERIFIED | CQT runtime 单元测试 |
 | CQT fixed horizon 开放暴露 | VERIFIED | safe/overdue terminal 测试 |
 | Setup/Batch 的实际 PROCESS 事件 CQT 钩子 | VERIFIED | 组合边界测试 |
-| Dedication、Failure/PM | LOCKED | 不得进入运行路径 |
+| Dedication 原子绑定、具体机硬过滤与生命周期 | VERIFIED | MC06 金标准与 runtime 单元测试 |
+| Dedication 初始 WIP、qualification 冲突与 terminal binding | VERIFIED | 审计、异常与 fixed-horizon 测试 |
+| Dedication 与 Setup/CQT/Batch 组合边界 | VERIFIED | 组合边界测试 |
+| Failure/PM | LOCKED | 不得进入运行路径 |
 
-MC06 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。
+MC07 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。

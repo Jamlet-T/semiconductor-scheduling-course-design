@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.0`  
+版本：`0.1.1`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -147,8 +147,10 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
 | 关系 | FROZEN | `SVESTN=yes/FORSTEP` 表示当前 step 选择的具体 machine 要在指定未来 step 复用 |
+| 建立时机 | FROZEN | 仅中央动作提交器成功提交 `DISPATCH`、lot 进入 `RESERVED` 后原子建立；候选生成、可行性检查和策略排序不得写入绑定 |
 | 生命周期 | FROZEN | 绑定键为 `(lot, dedication_edge, visit)`，到达指定终点并完成后释放 |
 | 可行性 | FROZEN | 绑定设备不可用时 lot 等待，不能自行改派到同组其他设备 |
+| 资格交集 | FROZEN | target 动作必须同时满足普通 qualification 与具体 machine binding；两者冲突时显式报错，不得 fallback |
 | 初始 WIP | FROZEN | 不伪造 t=0 前的历史绑定；按未绑定派工并计数 `initial_wip_missing_dedication`，正式报告做 cohort 敏感性分析 |
 
 ## 8. 故障和 PM

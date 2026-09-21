@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.0`  
+版本：`0.1.1`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03、Batch 的 MC04 与 CQT 的 MC05 已进入实现并验证；Dedication、Failure/PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03、Batch 的 MC04、CQT 的 MC05 与 Dedication 的 MC06 已进入实现并验证；Failure/PM 仍不得用于正式实验。
 
 ## 1. 证据层级与统一约定
 
@@ -201,7 +201,7 @@ route.STIME
 | `SVESTN=yes` | `DedicationEdge.enabled` | 当前 step 选择的具体物理机产生绑定 |
 | `FORSTEP` | `DedicationEdge.target_step` | 目标 step 必须复用该物理机 |
 
-绑定键为 `(lot_id, edge_id, visit_index)`，目标 step 完成后释放。绑定设备忙或停机时只能等待。两套数据中的 target 均存在且严格位于 source 之后。初始 WIP 缺失历史绑定按第 6 节处理。实现前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。
+绑定键为 `(lot_id, edge_id, visit_index)`。绑定仅在中央提交器成功提交 source step 的具体 `lot-machine` 动作、lot 进入 `RESERVED` 后建立；候选枚举和可行性检查无副作用。target step 必须同时满足普通 qualification 和绑定的物理 machine，绑定机忙时等待，冲突时显式失败；target `PROCESS_FINISH` 后释放。两套数据中的 target 均存在且严格位于 source 之后。初始 WIP 缺失历史绑定按第 6 节处理。MC06 已验证原子绑定、具体机硬过滤、忙机等待、生命周期、初始 WIP 审计、资格冲突、Setup/CQT/Batch 组合与 fixed-horizon 快照；状态为 `VERIFIED-MC06-RUNTIME`。正式 SMT2020 loader 尚未装配 `SVESTN/FORSTEP`。
 
 ## 11. Failure、PM 与 SDT
 
@@ -253,7 +253,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.0",
+  "simulation_contract_version": "0.1.1",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,

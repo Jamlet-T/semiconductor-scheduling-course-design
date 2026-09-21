@@ -1,9 +1,9 @@
 {
   "schema_version": "0.1.0",
-  "contract_version": "0.1.0",
-  "event_priority_contract_version": "0.1.0",
+  "contract_version": "0.1.1",
+  "event_priority_contract_version": "0.1.1",
   "time_unit": "minute",
-  "status": "mc01_mc05_verified",
+  "status": "mc01_mc06_verified",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
@@ -632,21 +632,291 @@
     },
     {
       "id": "MC06_MACHINE_DEDICATION",
-      "implementation_status": "locked",
+      "implementation_status": "verified",
       "purpose": "跨步骤绑定到具体设备",
-      "tool_group": {"id": "G", "machines": ["M1", "M2"]},
+      "tool_group": {
+        "id": "G",
+        "machines": [
+          "M1",
+          "M2"
+        ]
+      },
       "lot": {
         "id": "L1",
         "dedication_origin_step": 1,
         "dedication_target_step": 3,
-        "origin_machine": "M2"
+        "origin_machine": "M2",
+        "release": 0,
+        "operations": [
+          {
+            "step": 1,
+            "process": 5,
+            "qualified_machines": [
+              "M1",
+              "M2"
+            ]
+          },
+          {
+            "step": 2,
+            "process": 5,
+            "qualified_machines": [
+              "M3"
+            ]
+          },
+          {
+            "step": 3,
+            "process": 5,
+            "qualified_machines": [
+              "M1",
+              "M2"
+            ]
+          }
+        ]
       },
-      "target_arrival_state": {"M1": "IDLE", "M2": "BUSY"},
+      "target_arrival_state": {
+        "M1": "IDLE",
+        "M2": "BUSY"
+      },
       "expected": {
-        "eligible_machines_at_target": ["M2"],
+        "eligible_machines_at_target": [
+          "M2"
+        ],
         "dispatch_to_M1": false,
-        "wait_for_M2": true
-      }
+        "wait_for_M2": true,
+        "source_candidate_machines_before_commit": [
+          "M1",
+          "M2"
+        ],
+        "bound_machine": "M2",
+        "binding_established_at": 0,
+        "target_arrival_at": 10,
+        "target_dispatch_at": 15,
+        "target_machine": "M2",
+        "binding_released_at": 20,
+        "completion": {
+          "A0": 2,
+          "B0": 15,
+          "L1": 20
+        },
+        "metrics": {
+          "completed_lots": 3,
+          "released_lots": 3,
+          "completion_ratio": 1.0,
+          "mean_cycle_time_completed": 10.666666666666666,
+          "throughput_lots_per_minute": 0.15,
+          "terminal_wip_lots": 0,
+          "end_time": 20
+        },
+        "dedication_metrics": {
+          "dedication_binding_count": 1,
+          "released_dedication_count": 1,
+          "active_dedication_count": 0,
+          "initial_wip_missing_dedication": 0
+        }
+      },
+      "dedication": {
+        "dedication_id": "DED-MC06-1-3",
+        "route_id": "MC06",
+        "source_step": 1,
+        "target_step": 3,
+        "establish_event": "DISPATCH_COMMITTED",
+        "release_event": "PROCESS_FINISH_TARGET",
+        "constraint_level": "physical_machine"
+      },
+      "auxiliary_lots": [
+        {
+          "id": "A0",
+          "release": 0,
+          "machine": "M1",
+          "process": 2
+        },
+        {
+          "id": "B0",
+          "release": 5,
+          "machine": "M2",
+          "process": 10
+        }
+      ],
+      "expected_trace": [
+        {
+          "time": 0,
+          "event": "LOT_RELEASE",
+          "lot": "A0",
+          "step": 1
+        },
+        {
+          "time": 0,
+          "event": "LOT_RELEASE",
+          "lot": "L1",
+          "step": 1
+        },
+        {
+          "time": 0,
+          "event": "DISPATCH",
+          "lot": "A0",
+          "machine": "M1",
+          "step": 1
+        },
+        {
+          "time": 0,
+          "event": "PROCESS_START",
+          "lot": "A0",
+          "machine": "M1",
+          "step": 1
+        },
+        {
+          "time": 0,
+          "event": "DISPATCH",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 0,
+          "event": "DEDICATION_BIND",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 1,
+          "dedication_id": "DED-MC06-1-3",
+          "dedication_source_step": 1,
+          "dedication_target_step": 3,
+          "dedication_bound_machine": "M2",
+          "dedication_established_at": 0
+        },
+        {
+          "time": 0,
+          "event": "PROCESS_START",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 2,
+          "event": "PROCESS_FINISH",
+          "lot": "A0",
+          "machine": "M1",
+          "step": 1
+        },
+        {
+          "time": 2,
+          "event": "LOT_COMPLETE",
+          "lot": "A0",
+          "step": 1
+        },
+        {
+          "time": 5,
+          "event": "PROCESS_FINISH",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 5,
+          "event": "ROUTE_ADVANCE",
+          "lot": "L1",
+          "step": 2
+        },
+        {
+          "time": 5,
+          "event": "LOT_RELEASE",
+          "lot": "B0",
+          "step": 1
+        },
+        {
+          "time": 5,
+          "event": "DISPATCH",
+          "lot": "B0",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 5,
+          "event": "PROCESS_START",
+          "lot": "B0",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 5,
+          "event": "DISPATCH",
+          "lot": "L1",
+          "machine": "M3",
+          "step": 2
+        },
+        {
+          "time": 5,
+          "event": "PROCESS_START",
+          "lot": "L1",
+          "machine": "M3",
+          "step": 2
+        },
+        {
+          "time": 10,
+          "event": "PROCESS_FINISH",
+          "lot": "L1",
+          "machine": "M3",
+          "step": 2
+        },
+        {
+          "time": 10,
+          "event": "ROUTE_ADVANCE",
+          "lot": "L1",
+          "step": 3
+        },
+        {
+          "time": 15,
+          "event": "PROCESS_FINISH",
+          "lot": "B0",
+          "machine": "M2",
+          "step": 1
+        },
+        {
+          "time": 15,
+          "event": "LOT_COMPLETE",
+          "lot": "B0",
+          "step": 1
+        },
+        {
+          "time": 15,
+          "event": "DISPATCH",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 3
+        },
+        {
+          "time": 15,
+          "event": "PROCESS_START",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 3
+        },
+        {
+          "time": 20,
+          "event": "PROCESS_FINISH",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 3
+        },
+        {
+          "time": 20,
+          "event": "DEDICATION_RELEASE",
+          "lot": "L1",
+          "machine": "M2",
+          "step": 3,
+          "dedication_id": "DED-MC06-1-3",
+          "dedication_source_step": 1,
+          "dedication_target_step": 3,
+          "dedication_bound_machine": "M2",
+          "dedication_established_at": 0,
+          "dedication_released_at": 20
+        },
+        {
+          "time": 20,
+          "event": "LOT_COMPLETE",
+          "lot": "L1",
+          "step": 3
+        }
+      ]
     },
     {
       "id": "MC07_FAILURE_AND_EVENT_BARRIER",

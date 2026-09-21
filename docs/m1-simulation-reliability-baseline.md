@@ -98,6 +98,8 @@ CQT: O1 finish → O3 start, limit=8
 
 ### MC06：具体设备 Dedication
 
+实现状态：`VERIFIED`（原子提交绑定、具体物理机硬过滤、忙机等待、目标完成释放、资格冲突、初始 WIP 审计、Setup/CQT/Batch 组合、fixed-horizon 绑定快照与确定性测试已通过）。
+
 设备组 G 有 M1、M2。L1 在绑定起点由 M2 加工，未来指定 step 到达时 M1 空闲、M2 忙碌。
 
 期望：L1 等待 M2，不得因 M1 空闲而改派；指定终点完成后对应绑定释放。

@@ -27,7 +27,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertFalse(route["optimizer_enabled"])
 
     def test_micro_cases_follow_the_frozen_contract_version(self) -> None:
-        self.assertEqual(self.micro_cases["status"], "mc01_mc05_verified")
+        self.assertEqual(self.micro_cases["status"], "mc01_mc06_verified")
         self.assertEqual(
             self.micro_cases["contract_version"],
             self.project["technical_route"]["contract_version"],
@@ -53,7 +53,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(len(case_ids), len(set(case_ids)))
         self.assertEqual(set(case_ids), expected_ids)
 
-    def test_only_mc01_through_mc05_are_verified(self) -> None:
+    def test_only_mc01_through_mc06_are_verified(self) -> None:
         statuses = {
             case["id"]: case["implementation_status"]
             for case in self.micro_cases["cases"]
@@ -63,6 +63,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(statuses["MC03_SEQUENCE_SETUP"], "verified")
         self.assertEqual(statuses["MC04_BATCH_CAPACITY"], "verified")
         self.assertEqual(statuses["MC05_CROSS_STEP_CQT"], "verified")
+        self.assertEqual(statuses["MC06_MACHINE_DEDICATION"], "verified")
         for case_id in sorted(
             set(statuses)
             - {
@@ -71,6 +72,7 @@ class ContractConfigurationTests(unittest.TestCase):
                 "MC03_SEQUENCE_SETUP",
                 "MC04_BATCH_CAPACITY",
                 "MC05_CROSS_STEP_CQT",
+                "MC06_MACHINE_DEDICATION",
             }
         ):
             self.assertEqual(statuses[case_id], "locked")

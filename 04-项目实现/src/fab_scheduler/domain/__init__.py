@@ -3,6 +3,7 @@
 from fab_scheduler.domain.models import (
     BatchSpec,
     CQTSpec,
+    DedicationSpec,
     LotSpec,
     MachineSpec,
     OperationSpec,
@@ -13,6 +14,7 @@ from fab_scheduler.domain.models import (
 __all__ = [
     "BatchSpec",
     "CQTSpec",
+    "DedicationSpec",
     "LotSpec",
     "MachineSpec",
     "OperationSpec",

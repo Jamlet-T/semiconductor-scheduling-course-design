@@ -16,6 +16,12 @@ from fab_scheduler.simulation.cqt import (
     CQTRecord,
     TerminalCQTSnapshot,
 )
+from fab_scheduler.simulation.dedication import (
+    DedicationBinding,
+    DedicationMetrics,
+    DedicationRecord,
+    InitialWipDedicationAudit,
+)
 
 __all__ = [
     "ActiveBatchSnapshot",
@@ -30,4 +36,8 @@ __all__ = [
     "CQTMetrics",
     "CQTRecord",
     "TerminalCQTSnapshot",
+    "DedicationBinding",
+    "DedicationMetrics",
+    "DedicationRecord",
+    "InitialWipDedicationAudit",
 ]

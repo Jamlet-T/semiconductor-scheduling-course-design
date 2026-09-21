@@ -1,7 +1,7 @@
 """可信轻量 DES 内核的第一阶段实现。
 
-当前覆盖 MC01-MC05：动态投放、等待队列、FIFO 派工、确定性加工、
-路线推进、显式 Setup、显式 Batch、跨步 CQT 和终止。Dedication、
+当前覆盖 MC01-MC06：动态投放、等待队列、FIFO 派工、确定性加工、
+路线推进、显式 Setup、显式 Batch、跨步 CQT、物理机 Dedication 和终止。
 Failure/PM 尚未解锁。
 """
 
@@ -38,6 +38,14 @@ from fab_scheduler.simulation.cqt import (
     CQTRecord,
     CQTRuntime,
     TerminalCQTSnapshot,
+)
+from fab_scheduler.simulation.dedication import (
+    DEDICATION_RUNTIME_SCHEMA_VERSION,
+    DedicationBinding,
+    DedicationMetrics,
+    DedicationRecord,
+    DedicationRuntime,
+    InitialWipDedicationAudit,
 )
 from fab_scheduler.simulation.provenance import (
     SIMULATION_CONTRACT_VERSION,
@@ -188,6 +196,10 @@ class SimulationResult:
     cqt_records: tuple[CQTRecord, ...]
     open_cqt_clocks: tuple[TerminalCQTSnapshot, ...]
     cqt_metrics: CQTMetrics
+    dedication_records: tuple[DedicationRecord, ...]
+    active_dedication_bindings: tuple[DedicationBinding, ...]
+    initial_wip_dedication_audits: tuple[InitialWipDedicationAudit, ...]
+    dedication_metrics: DedicationMetrics
 
     def trace_as_dicts(self) -> list[dict[str, Any]]:
         return [record.to_dict() for record in self.trace]
@@ -211,6 +223,9 @@ class SimulationResult:
             "CQT_OPEN",
             "CQT_CLOSE",
             "CQT_VIOLATION",
+            "DEDICATION_BIND",
+            "DEDICATION_RELEASE",
+            "DEDICATION_HISTORY_UNKNOWN",
         }
         rows = []
         for record in self.trace:
@@ -249,6 +264,25 @@ class SimulationResult:
                         "cqt_slack": record.cqt_slack,
                         "cqt_violation": record.cqt_violation,
                         "cqt_excess_duration": record.cqt_excess_duration,
+                        "dedication_id": record.dedication_id,
+                        "dedication_source_step": (
+                            record.dedication_source_step_id
+                        ),
+                        "dedication_target_step": (
+                            record.dedication_target_step_id
+                        ),
+                        "dedication_bound_machine": (
+                            record.dedication_bound_machine_id
+                        ),
+                        "dedication_established_at": (
+                            record.dedication_established_at
+                        ),
+                        "dedication_released_at": (
+                            record.dedication_released_at
+                        ),
+                        "dedication_audit_reason": (
+                            record.dedication_audit_reason
+                        ),
                     }.items()
                     if value is not None
                 }
@@ -295,8 +329,14 @@ class Simulator:
             scenario.setup_transitions
         )
         self._cqt_runtime = CQTRuntime(scenario.cqt_constraints)
+        self._dedication_runtime = DedicationRuntime(
+            scenario.dedication_constraints
+        )
         self._lots = {
-            lot.lot_id: _LotRuntime(spec=lot)
+            lot.lot_id: _LotRuntime(
+                spec=lot,
+                operation_index=lot.initial_operation_index,
+            )
             for lot in scenario.lots
         }
         self._machines = {
@@ -339,6 +379,7 @@ class Simulator:
             at_time=end_time
         )
         cqt_metrics = self._cqt_runtime.metrics(at_time=end_time)
+        dedication_metrics = self._dedication_runtime.metrics
         provenance = RunProvenance(
             simulation_contract_version=SIMULATION_CONTRACT_VERSION,
             dataset_version=self.scenario.dataset_version,
@@ -348,6 +389,9 @@ class Simulator:
                 **asdict(self.scenario),
                 "random_stream_scheme": "sha256(seed,stream,entity,occurrence)",
                 "cqt_runtime_schema_version": CQT_RUNTIME_SCHEMA_VERSION,
+                "dedication_runtime_schema_version": (
+                    DEDICATION_RUNTIME_SCHEMA_VERSION
+                ),
             },
             dispatch_policy=self.policy.name,
             termination_condition=self.scenario.termination_mode,
@@ -387,6 +431,14 @@ class Simulator:
             cqt_records=self._cqt_runtime.records,
             open_cqt_clocks=open_cqt_clocks,
             cqt_metrics=cqt_metrics,
+            dedication_records=self._dedication_runtime.released_records,
+            active_dedication_bindings=(
+                self._dedication_runtime.active_bindings
+            ),
+            initial_wip_dedication_audits=(
+                self._dedication_runtime.initial_wip_audits
+            ),
+            dedication_metrics=dedication_metrics,
         )
 
     def query_cqt_state(
@@ -499,6 +551,28 @@ class Simulator:
             state_before=LotStatus.UNRELEASED.value,
             state_after=LotStatus.QUEUED.value,
         )
+        if lot.spec.is_initial_wip:
+            audits = self._dedication_runtime.register_initial_wip(
+                lot_id=lot.spec.lot_id,
+                route_id=operation.route_id,
+                current_step_id=operation.step_id,
+                recorded_at=self.current_time,
+                visit_index=0,
+            )
+            for audit in audits:
+                self._record(
+                    event_type="DEDICATION_HISTORY_UNKNOWN",
+                    priority=event.priority,
+                    cause_event_seq=event.seq,
+                    lot=lot,
+                    operation=operation,
+                    dedication_id=audit.dedication_id,
+                    dedication_source_step_id=audit.source_step_id,
+                    dedication_target_step_id=audit.target_step_id,
+                    dedication_audit_reason=audit.reason,
+                    state_before="HISTORICAL_BINDING:UNKNOWN",
+                    state_after="QUALIFICATION_ONLY",
+                )
         self._ensure_dispatch_barrier()
 
     def _handle_dispatch_barrier(self, event: Event) -> None:
@@ -537,6 +611,14 @@ class Simulator:
                 continue
             operation = lot.spec.operations[lot.operation_index]
             if machine_id not in operation.eligible_machines:
+                continue
+            if not self._dedication_runtime.allows_machine(
+                lot_id=lot.spec.lot_id,
+                route_id=operation.route_id,
+                step_id=operation.step_id,
+                machine_id=machine_id,
+                visit_index=0,
+            ):
                 continue
             if lot.queue_entered_at is None:
                 raise SimulationError(f"排队 lot 缺少入队时间：{lot_id}")
@@ -725,6 +807,14 @@ class Simulator:
             operation = lot.spec.operations[lot.operation_index]
             if machine_id not in operation.eligible_machines:
                 raise SimulationError("Batch member 不再满足设备资格")
+            if not self._dedication_runtime.allows_machine(
+                lot_id=lot.spec.lot_id,
+                route_id=operation.route_id,
+                step_id=operation.step_id,
+                machine_id=machine_id,
+                visit_index=0,
+            ):
+                raise SimulationError("Batch member 不再满足 Dedication")
             if (
                 operation.route_id,
                 operation.step_id,
@@ -792,6 +882,16 @@ class Simulator:
             state_after="BATCH:RESERVED|MACHINE:RESERVED",
             **batch_trace,
         )
+        for lot in member_lots:
+            operation = lot.spec.operations[lot.operation_index]
+            self._establish_dedication_bindings(
+                lot=lot,
+                operation=operation,
+                machine_id=machine_id,
+                priority=barrier_event.priority,
+                cause_event_seq=barrier_event.seq,
+                batch_id=batch_id,
+            )
         self._record(
             event_type="BATCH_START",
             priority=barrier_event.priority,
@@ -860,6 +960,13 @@ class Simulator:
             machine_id=machine.machine_id,
             state_before="LOT:QUEUED|MACHINE:IDLE",
             state_after="LOT:RESERVED|MACHINE:RESERVED",
+        )
+        self._establish_dedication_bindings(
+            lot=lot,
+            operation=operation,
+            machine_id=machine.machine_id,
+            priority=barrier_event.priority,
+            cause_event_seq=barrier_event.seq,
         )
         setup_duration = self._setup_resolver.resolve(
             current_setup=machine.current_setup,
@@ -1042,6 +1149,12 @@ class Simulator:
             priority=event.priority,
             cause_event_seq=event.seq,
         )
+        self._release_dedication_bindings(
+            lot=lot,
+            operation=operation,
+            priority=event.priority,
+            cause_event_seq=event.seq,
+        )
         machine.status = MachineStatus.IDLE
         machine.lot_id = None
         machine.operation_index = None
@@ -1142,6 +1255,13 @@ class Simulator:
                 cause_event_seq=event.seq,
                 batch_id=batch_id,
             )
+            self._release_dedication_bindings(
+                lot=lot,
+                operation=operation,
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                batch_id=batch_id,
+            )
             self._advance_lot_after_processing(
                 priority=event.priority,
                 cause_event_seq=event.seq,
@@ -1177,6 +1297,13 @@ class Simulator:
             )
         else:
             next_operation = lot.spec.operations[lot.operation_index]
+            self._dedication_runtime.validate_target_qualification(
+                lot_id=lot.spec.lot_id,
+                route_id=next_operation.route_id,
+                step_id=next_operation.step_id,
+                eligible_machines=next_operation.eligible_machines,
+                visit_index=0,
+            )
             lot.status = LotStatus.QUEUED
             lot.queue_entered_at = self.current_time
             self._record(
@@ -1233,6 +1360,77 @@ class Simulator:
                 cqt_deadline=clock.deadline,
                 state_before="CQT:INACTIVE",
                 state_after="CQT:ACTIVE",
+            )
+
+    def _establish_dedication_bindings(
+        self,
+        *,
+        lot: _LotRuntime,
+        operation: Any,
+        machine_id: str,
+        priority: int,
+        cause_event_seq: int,
+        batch_id: str | None = None,
+    ) -> None:
+        bindings = self._dedication_runtime.establish_for_source(
+            lot_id=lot.spec.lot_id,
+            route_id=operation.route_id,
+            step_id=operation.step_id,
+            machine_id=machine_id,
+            established_at=self.current_time,
+            visit_index=0,
+        )
+        for binding in bindings:
+            self._record(
+                event_type="DEDICATION_BIND",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=operation,
+                machine_id=machine_id,
+                batch_id=batch_id,
+                dedication_id=binding.dedication_id,
+                dedication_source_step_id=binding.source_step_id,
+                dedication_target_step_id=binding.target_step_id,
+                dedication_bound_machine_id=binding.machine_id,
+                dedication_established_at=binding.established_at,
+                state_before="DEDICATION:UNBOUND",
+                state_after="DEDICATION:BOUND",
+            )
+
+    def _release_dedication_bindings(
+        self,
+        *,
+        lot: _LotRuntime,
+        operation: Any,
+        priority: int,
+        cause_event_seq: int,
+        batch_id: str | None = None,
+    ) -> None:
+        records = self._dedication_runtime.release_for_target(
+            lot_id=lot.spec.lot_id,
+            route_id=operation.route_id,
+            step_id=operation.step_id,
+            released_at=self.current_time,
+            visit_index=0,
+        )
+        for record in records:
+            self._record(
+                event_type="DEDICATION_RELEASE",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=operation,
+                machine_id=record.machine_id,
+                batch_id=batch_id,
+                dedication_id=record.dedication_id,
+                dedication_source_step_id=record.source_step_id,
+                dedication_target_step_id=record.target_step_id,
+                dedication_bound_machine_id=record.machine_id,
+                dedication_established_at=record.established_at,
+                dedication_released_at=record.released_at,
+                state_before="DEDICATION:BOUND",
+                state_after="DEDICATION:RELEASED",
             )
 
     def _close_cqt_clocks(
@@ -1320,6 +1518,13 @@ class Simulator:
         cqt_slack: float | None = None,
         cqt_violation: bool | None = None,
         cqt_excess_duration: float | None = None,
+        dedication_id: str | None = None,
+        dedication_source_step_id: int | None = None,
+        dedication_target_step_id: int | None = None,
+        dedication_bound_machine_id: str | None = None,
+        dedication_established_at: float | None = None,
+        dedication_released_at: float | None = None,
+        dedication_audit_reason: str | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -1357,6 +1562,13 @@ class Simulator:
             cqt_slack=cqt_slack,
             cqt_violation=cqt_violation,
             cqt_excess_duration=cqt_excess_duration,
+            dedication_id=dedication_id,
+            dedication_source_step_id=dedication_source_step_id,
+            dedication_target_step_id=dedication_target_step_id,
+            dedication_bound_machine_id=dedication_bound_machine_id,
+            dedication_established_at=dedication_established_at,
+            dedication_released_at=dedication_released_at,
+            dedication_audit_reason=dedication_audit_reason,
             state_before=state_before,
             state_after=state_after,
             cause_event_seq=cause_event_seq,

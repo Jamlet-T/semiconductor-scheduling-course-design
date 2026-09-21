@@ -1,4 +1,4 @@
-"""Contract 0.1.0 的确定性 Batch formation。"""
+"""Contract 0.1.1 的确定性 Batch formation。"""
 
 from __future__ import annotations
 
