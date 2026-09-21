@@ -1,6 +1,6 @@
 # M1 金标准微型算例
 
-`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC08 已由轻量 DES 逐事件验证；这只表示微型机制验证完成，M1 仍为 `awaiting_closure_audit`。
+`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC08 已由轻量 DES 逐事件验证；闭环审计确认原 M1 门槛仍有 GAP，因此 M1 为 `not_passed_gaps`。
 
 约定：
 

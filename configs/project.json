@@ -3,8 +3,8 @@
   "phase": "m1_simulation_reliability_baseline",
   "duration_weeks": 14,
   "simulation_implemented": true,
-  "simulation_status": "des_mc01_mc08_verified_awaiting_closure_audit",
-  "m1_status": "awaiting_closure_audit",
+  "simulation_status": "des_mc01_mc08_verified_m1_gaps",
+  "m1_status": "not_passed_gaps",
   "m1_verified_cases": [
     "MC01_ROUTE_ORDER",
     "MC02_DYNAMIC_RELEASE_FIFO",
@@ -28,6 +28,23 @@
       "facility_layout_optimization",
       "3D_digital_twin"
     ]
+  },
+  "m1_closure_audit": {
+    "audited_baseline": "d5d70c5a7490273b31256c1a774530a2e8512b1e",
+    "result": "not_passed_gaps",
+    "failed_exit_criteria": [
+      "M1-E06",
+      "M1-E07",
+      "M1-E10"
+    ],
+    "runtime_reliability": "verified_for_explicit_scenarios_within_implemented_scope",
+    "smt2020_data_integration": "not_ready",
+    "next_gate": "m1_exit_criteria_gap_closure_and_smt2020_data_integration"
+  },
+  "smt2020_data_integration_gate": {
+    "status": "pending",
+    "formal_experiments_allowed": false,
+    "optimizer_training_allowed": false
   },
   "event_replay": {
     "status": "planned",

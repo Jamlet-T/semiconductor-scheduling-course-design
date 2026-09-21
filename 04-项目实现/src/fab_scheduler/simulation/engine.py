@@ -2472,6 +2472,13 @@ class Simulator:
             lot.completion_time - lot.spec.release_time
             for lot in completed
             if lot.completion_time is not None
+            and not lot.spec.is_initial_wip
+        ]
+        released_cycle_cohort = [
+            lot for lot in released if not lot.spec.is_initial_wip
+        ]
+        completed_cycle_cohort = [
+            lot for lot in completed if not lot.spec.is_initial_wip
         ]
         return SimulationMetrics(
             completed_lots=len(completed),
@@ -2488,7 +2495,9 @@ class Simulator:
             terminal_wip_lots=len(released) - len(completed),
             end_time=end_time,
             cycle_time_coverage=(
-                len(completed) / len(released) if released else 0.0
+                len(completed_cycle_cohort) / len(released_cycle_cohort)
+                if released_cycle_cohort
+                else 0.0
             ),
             remaining_work_minutes=self._remaining_work_minutes(end_time),
             lateness_exposure_minutes=sum(

@@ -281,4 +281,8 @@ Fab → Fab, uniform(7.5, 2.5), min
 3. `uniform(m,w)` 的参数解释来自开源参考实现而非原始文件自描述；本地模型已固定为均值和全宽。
 4. `TRACE`、多数 `IGNORE` 内容的业务展示含义暂缓，不影响事件逻辑。
 
+证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
+
+本 Data Contract 完成的是字段语义冻结，不代表 raw SMT2020 → internal Scenario 的正式 loader 已实现。Loader Gap Register 见 `m1-closure-audit.md`。
+
 这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验仍要等待 8 个 micro case 全部通过。

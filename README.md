@@ -2,13 +2,13 @@
 
 面向 14 周课程设计的小组协作仓库，目标是围绕 SMT2020 数据建立可复现的晶圆厂调度研究与软件原型。
 
-项目入口：[完整实施方案与 14 周安排](03-实施方案/课程设计完整实施方案.md) · [Simulation Contract](docs/simulation-contract.md) · [Data Contract](docs/data-contract.md) · [M1 验收基线](docs/m1-simulation-reliability-baseline.md) · [PySCFabSim 语义审计](docs/pyscfabsim-semantic-diff.md) · [数据结构审计](03-实施方案/数据结构审计.json) · [贡献指南](CONTRIBUTING.md)。
+项目入口：[完整实施方案与 14 周安排](03-实施方案/课程设计完整实施方案.md) · [Simulation Contract](docs/simulation-contract.md) · [Data Contract](docs/data-contract.md) · [M1 验收基线](docs/m1-simulation-reliability-baseline.md) · [M1 Closure Audit](docs/m1-closure-audit.md) · [Metric Contract](docs/metric-contract.md) · [语义证据矩阵](docs/semantic-evidence-matrix.md) · [PySCFabSim 语义审计](docs/pyscfabsim-semantic-diff.md) · [数据结构审计](03-实施方案/数据结构审计.json) · [贡献指南](CONTRIBUTING.md)。
 
 ## 当前状态
 
-**已实现：** Python 3.11+ 的可信轻量 DES、FIFO、显式 Setup、wafer 容量 Batch、跨步 CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、实体索引随机流、provenance 和事件 trace。MC01～MC08 已逐事件验证；M1 当前为 `awaiting_closure_audit`。
+**已实现：** Python 3.11+ 的可信轻量 DES、FIFO、显式 Setup、wafer 容量 Batch、跨步 CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、实体索引随机流、provenance、事件 trace 与独立审计检查器。MC01～MC08 已逐事件验证。
 
-**计划中：** 下一阶段仅进行 M1 Closure Audit，核对正式数据链、契约一致性和 provenance 完整性；审计通过前不运行 HVLM/LVHM，也不启用 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
+**审计结论：** M1 Closure Audit 已完成，原始门槛 M1-E06、M1-E07、M1-E10 仍有 GAP，因此 `M1 = not_passed_gaps`。下一 Gate 是补齐原 M1 接口/多策略证据并完成 SMT2020 Data Integration；在此之前不运行 HVLM/LVHM，也不启用 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
 
 ## 数据与教学材料
 

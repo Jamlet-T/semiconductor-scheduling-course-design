@@ -38,7 +38,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("项目阶段：M1 Simulation Reliability Baseline", result.stdout)
         self.assertIn("项目周期：14 周", result.stdout)
         self.assertIn(
-            "仿真状态：可信轻量 DES 已验证 MC01-MC08；M1 等待闭环审计",
+            "仿真状态：可信轻量 DES 已验证 MC01-MC08；M1 闭环审计存在 GAP",
             result.stdout,
         )
         self.assertIn(

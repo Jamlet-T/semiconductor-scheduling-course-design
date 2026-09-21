@@ -8,6 +8,9 @@
 - [Data Contract](data-contract.md)：SMT2020 原始字段到内部对象及事件语义的映射。
 - [可信轻量 DES 架构](des-architecture.md)：MC01～MC08 内核、事件流、状态机与验证边界。
 - [M1 — Simulation Reliability Baseline](m1-simulation-reliability-baseline.md)：进入优化前的强制验收门槛与金标准算例。
+- [M1 Closure Audit](m1-closure-audit.md)：原始 Exit Criteria、三向追踪、PASS/GAP 判定与下一 Gate。
+- [Metric Contract](metric-contract.md)：终止模式、指标分母、WIP、剩余工作和时间守恒口径。
+- [Semantic Evidence Matrix](semantic-evidence-matrix.md)：原始数据、参考实现、本地假设和不可恢复历史状态的证据分级。
 - [PySCFabSim Semantic Diff](pyscfabsim-semantic-diff.md)：开源仿真器源码语义审计。
 
-后续先进行 M1 Closure Audit，再记录策略配置与实验复现步骤。当前已完成 MC01～MC08 的微型验证，但 M1 尚未正式通过，也没有 HVLM/LVHM 正式实验结果；不得将计划内容写成已验证结论。SMT2020 数据随仓库位于根目录 `datasets/`，已纳入版本控制的数据保持内容只读、原始字节不可变；派生数据写入 `runs/` 或 `artifacts/`。原始教学资料仍需通过教师或组内授权渠道取得，不在公开仓库保存。
+M1 Closure Audit 已完成：MC01～MC08 的运行时机制在显式 Scenario 下通过，但原始 M1 门槛中的多策略统一动作链、跨策略共同随机数证据和 `simulate(theta, scenario, seed)` 接口仍有 GAP；正式 SMT2020 loader 另列 Data Integration Gate。因此 M1 尚未通过，也没有 HVLM/LVHM 正式实验结果。SMT2020 数据随仓库位于根目录 `datasets/`，已纳入版本控制的数据保持内容只读、原始字节不可变；派生数据写入 `runs/` 或 `artifacts/`。原始教学资料仍需通过教师或组内授权渠道取得，不在公开仓库保存。

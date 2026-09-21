@@ -62,4 +62,4 @@
 3. 用 FIFO/CR 的最小行为实验比较两者，差异逐项归因，不强求数值完全相同；
 4. 如复用 MIT 代码片段，保留版权和许可证通知，并在报告中列明来源与修改。
 
-静态审计尚不能确认 PM 冲突、首工序搬运和全部分布参数。M1 仍需行为实验或原始格式说明才能关闭这些 `OPEN` 项。
+静态审计尚不能确认 PM 冲突、首工序搬运和全部分布参数。Closure Audit 将这些条目标为“参考实现证据不足”，不以 PySCFabSim 行为替代本项目 Contract；正式 SMT2020 Data Integration Gate 必须通过 raw-field → Scenario 的 loader golden tests 关闭相应数据链缺口。
