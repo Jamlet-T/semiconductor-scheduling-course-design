@@ -1,6 +1,6 @@
 {
   "name": "半导体制造系统的智能调度",
-  "phase": "m1_simulation_reliability_baseline",
+  "phase": "smt2020_data_integration_gate",
   "duration_weeks": 14,
   "simulation_implemented": true,
   "simulation_status": "des_mc01_mc08_verified_m1_passed",
@@ -18,7 +18,7 @@
   "technical_route": {
     "status": "frozen",
     "contract_version": "0.1.3",
-    "current_milestone": "M1",
+    "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,
     "out_of_scope": [
@@ -34,11 +34,20 @@
     "result": "passed",
     "failed_exit_criteria": [],
     "runtime_reliability": "passed_for_explicit_scenarios_within_implemented_scope",
-    "smt2020_data_integration": "not_ready",
-    "next_gate": "smt2020_data_integration"
+    "smt2020_data_integration": "not_passed_gaps",
+    "next_gate": "smt2020_runtime_compatibility_gap_closure"
   },
   "smt2020_data_integration_gate": {
-    "status": "pending",
+    "status": "not_passed_gaps",
+    "loader_contract_version": "0.1.0",
+    "loader_version": "0.1.0",
+    "validated_models": [
+      "SMT2020_HVLM",
+      "SMT2020_LVHM"
+    ],
+    "blocker_count_per_model": 11,
+    "real_data_smoke": "fifo_single_operation_validation_slice_only",
+    "next_gate": "smt2020_runtime_compatibility_gap_closure",
     "formal_experiments_allowed": false,
     "optimizer_training_allowed": false
   },

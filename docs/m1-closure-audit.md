@@ -233,3 +233,5 @@ release、processing、transport、sampling/rework 与 batch processing 的正�
 4. 完成 Data Integration Gate 后再讨论正式策略实验。
 
 在 Data Integration Gate 通过前：不允许正式 HVLM/LVHM 实验，不允许 CMA-ES，`optimizer_enabled` 继续为 `false`。
+
+> 后续状态（2026-09-21）：Data Integration Gate 首轮实现与审计已完成，结论为 `not_passed_gaps`。本 M1 文档保留当时的原始 loader gap 快照；当前 manifest、静态映射、真实 validation smoke 和 blocker register 以 `smt2020-loader-contract.md`、`smt2020-data-integration-gate.md` 为准。M1 仍为 passed，正式实验和优化器仍禁用。

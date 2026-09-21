@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；正式 SMT2020 loader 接入仍需 Closure Audit。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.0` 已完成静态数据链和真实 validation slice，但 Data Integration Gate 因 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -159,7 +159,7 @@ n_wafers >= B_min
 and (n_wafers >= B_target or feasible_wait >= T_max)
 ```
 
-低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 SMT2020 loader 的 per-batch 随机加工、tool 字段映射和 Setup 联合路径仍未实现。
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射；per-batch 随机加工及 raw 中不存在的 `B_target/T_max` 版本化配置仍为 Gate blocker。
 
 ## 8. Setup
 
@@ -182,7 +182,7 @@ route.STIME
 → 数据契约错误
 ```
 
-机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 SMT2020 loader 的 setup group 映射仍未实现。
+机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 loader 已映射 transition、setup group 与 MINRUN；MINRUN 尚未进入 runtime，初始 setup 仍为不可恢复历史。
 
 ## 9. CQT
 
@@ -192,7 +192,7 @@ route.STIME
 | `STEP_CQT` | `CQTConstraint.end_step` | 显式目标 step，可跨步 |
 | `CQT/CQTUNITS` | `max_duration_minutes` | 最大实际经过时间 |
 
-起点冻结为 source step 的 `PROCESS_FINISH`，终点冻结为 target step 的 `PROCESS_START`。中间加工、等待、搬运和 setup 均计时。两套数据中的所有 CQT target 都存在且严格位于 source 之后。MC05 已验证跨步开闭、精确期限、软约束超限、多个活动时钟、Setup 延迟、Batch 成员钩子与 fixed-horizon 开放暴露；状态为 `VERIFIED-MC05-RUNTIME`。正式 SMT2020 loader 尚未把原始 CQT 行装配为 runtime spec，初始 WIP 的历史 CQT 起点仍按第 6 节作为未知证据单列。
+起点冻结为 source step 的 `PROCESS_FINISH`，终点冻结为 target step 的 `PROCESS_START`。中间加工、等待、搬运和 setup 均计时。两套数据中的所有 CQT target 都存在且严格位于 source 之后。MC05 已验证跨步开闭、精确期限、软约束超限、多个活动时钟、Setup 延迟、Batch 成员钩子与 fixed-horizon 开放暴露；状态为 `VERIFIED-MC05-RUNTIME`。正式 loader 已装配并验证 source/target/unit 静态关系；完整 executable Scenario 被其他 blocker 阻止，初始 WIP 的历史 CQT 起点仍按第 6 节单列。
 
 ## 10. Dedication
 
@@ -201,7 +201,7 @@ route.STIME
 | `SVESTN=yes` | `DedicationEdge.enabled` | 当前 step 选择的具体物理机产生绑定 |
 | `FORSTEP` | `DedicationEdge.target_step` | 目标 step 必须复用该物理机 |
 
-绑定键为 `(lot_id, edge_id, visit_index)`。绑定仅在中央提交器成功提交 source step 的具体 `lot-machine` 动作、lot 进入 `RESERVED` 后建立；候选枚举和可行性检查无副作用。target step 必须同时满足普通 qualification 和绑定的物理 machine，绑定机忙时等待，冲突时显式失败；target `PROCESS_FINISH` 后释放。两套数据中的 target 均存在且严格位于 source 之后。初始 WIP 缺失历史绑定按第 6 节处理。MC06 已验证原子绑定、具体机硬过滤、忙机等待、生命周期、初始 WIP 审计、资格冲突、Setup/CQT/Batch 组合与 fixed-horizon 快照；状态为 `VERIFIED-MC06-RUNTIME`。正式 SMT2020 loader 尚未装配 `SVESTN/FORSTEP`。
+绑定键为 `(lot_id, edge_id, visit_index)`。绑定仅在中央提交器成功提交 source step 的具体 `lot-machine` 动作、lot 进入 `RESERVED` 后建立；候选枚举和可行性检查无副作用。target step 必须同时满足普通 qualification 和绑定的物理 machine，绑定机忙时等待，冲突时显式失败；target `PROCESS_FINISH` 后释放。两套数据中的 target 均存在且严格位于 source 之后。初始 WIP 缺失历史绑定按第 6 节处理。MC06 已验证原子绑定、具体机硬过滤、忙机等待、生命周期、初始 WIP 审计、资格冲突、Setup/CQT/Batch 组合与 fixed-horizon 快照；状态为 `VERIFIED-MC06-RUNTIME`。正式 loader 已装配并验证 `SVESTN/FORSTEP` 静态关系。
 
 ## 11. Failure、PM 与 SDT
 
@@ -230,7 +230,7 @@ route.STIME
 - 所有被中断活动的旧完成事件必须失效；
 - failure、repair、pm_interval、pm_duration 使用独立实体索引随机流。
 
-这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset 和 overlap ownership 是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME`；正式 SMT2020 loader 尚未装配 PM calendar/attach/FOA 链。
+这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset 和 overlap ownership 是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME`；正式 loader 已装配 calendar/attach/FOA 静态链，exponential failure 与同机多 calendar runtime 仍为 blocker。
 
 ## 12. Transport
 
@@ -249,7 +249,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 - transport 计入 cycle time 和跨越该区间的 CQT；
 - 不创建 OHT/AGV/轨道资源。
 
-当前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。MC01、MC02 fixture 显式采用 0 搬运。
+当前状态为 `STATIC-LOADER-VERIFIED / RUNTIME-NOT-IMPLEMENTED`。真实 `fromto` 已进入 `TransportDefinition`，MC01、MC02 fixture 显式采用 0 搬运。
 
 ## 13. Provenance 与数据版本
 
@@ -283,6 +283,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成的是字段语义冻结，不代表 raw SMT2020 → internal Scenario 的正式 loader 已实现。Loader Gap Register 见 `m1-closure-audit.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.0` 实现。完整 raw SMT2020 → executable Scenario 仍因真实加工、投放、运输、抽样/返工、级联和 calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
 
 这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验仍要等待 8 个 micro case 全部通过。

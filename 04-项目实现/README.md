@@ -1,6 +1,21 @@
 # fab-scheduler
 
-这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周。可信轻量 DES 已验证 MC01～MC08，并提供 FIFO/SPT/EDD/CR、统一 DispatchAction、`simulate(theta, scenario, seed)`、RandomSampleLedger/CRN audit、Setup、wafer Batch、CQT、Dedication、Failure、PM、trace、provenance 与独立审计检查器。重新审计后 M1 E01～E10 全部 PASS；SMT2020 Data Integration Gate 仍 pending，正式数据实验尚未开始，CMA-ES 继续禁用。
+这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周。可信轻量 DES 已验证 MC01～MC08，并提供 FIFO/SPT/EDD/CR、统一 DispatchAction、`simulate(theta, scenario, seed)`、RandomSampleLedger/CRN audit、Setup、wafer Batch、CQT、Dedication、Failure、PM、trace、provenance 与独立审计检查器。重新审计后 M1 E01～E10 全部 PASS。正式 SMT2020 loader 已能只读生成 manifest、静态领域模型、结构化 audit 和真实数据 validation slice；Data Integration Gate 因真实 processing/release/transport/sampling/rework/cascade/calendar runtime 缺口仍为 `not_passed_gaps`。正式数据实验尚未开始，CMA-ES 继续禁用。
+
+Loader 公共入口：
+
+```python
+from fab_scheduler.data import LoaderConfig, load_smt2020
+
+loaded = load_smt2020("../datasets", "SMT2020_HVLM")
+assert loaded.scenario is None  # BLOCKER 未清零，禁止伪造完整 Scenario
+
+smoke = load_smt2020(
+    "../datasets",
+    "SMT2020_HVLM",
+    loader_config=LoaderConfig(mode="validation_slice"),
+)
+```
 
 通过仓库根目录的命令安装：
 

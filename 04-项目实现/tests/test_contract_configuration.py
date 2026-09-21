@@ -20,10 +20,13 @@ class ContractConfigurationTests(unittest.TestCase):
 
     def test_m1_gate_keeps_optimizer_disabled(self) -> None:
         route = self.project["technical_route"]
-        self.assertEqual(self.project["phase"], "m1_simulation_reliability_baseline")
+        self.assertEqual(self.project["phase"], "smt2020_data_integration_gate")
         self.assertTrue(self.project["simulation_implemented"])
         self.assertEqual(route["status"], "frozen")
-        self.assertEqual(route["current_milestone"], "M1")
+        self.assertEqual(
+            route["current_milestone"],
+            "SMT2020_DATA_INTEGRATION_GATE",
+        )
         self.assertEqual(route["optimizer"], "CMA-ES")
         self.assertFalse(route["optimizer_enabled"])
 
@@ -39,7 +42,17 @@ class ContractConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(
             self.project["smt2020_data_integration_gate"]["status"],
-            "pending",
+            "not_passed_gaps",
+        )
+        self.assertFalse(
+            self.project["smt2020_data_integration_gate"][
+                "formal_experiments_allowed"
+            ]
+        )
+        self.assertFalse(
+            self.project["smt2020_data_integration_gate"][
+                "optimizer_training_allowed"
+            ]
         )
         self.assertEqual(
             self.micro_cases["contract_version"],

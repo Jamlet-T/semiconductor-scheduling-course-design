@@ -16,6 +16,35 @@ TimeDistributionKind = Literal["constant", "uniform"]
 
 
 @dataclass(frozen=True, slots=True)
+class SourceFileProvenance:
+    relative_path: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetProvenanceSpec:
+    """由 loader 自动附加到 Scenario 的原始数据身份。"""
+
+    dataset_family: str
+    model_name: str
+    manifest_hash: str
+    manifest_schema_version: str
+    loader_version: str
+    loader_contract_version: str
+    loader_config: tuple[tuple[str, str], ...]
+    raw_files: tuple[SourceFileProvenance, ...]
+
+    def __post_init__(self) -> None:
+        if not self.dataset_family or not self.model_name:
+            raise ValueError("dataset provenance identity 不能为空")
+        if len(self.manifest_hash) != 64:
+            raise ValueError("manifest_hash 必须是 SHA-256")
+        if not self.raw_files:
+            raise ValueError("dataset provenance 必须包含 raw_files")
+
+
+@dataclass(frozen=True, slots=True)
 class TimeDistributionSpec:
     """分钟制时长分布；uniform 的第二参数为全宽。"""
 
@@ -340,6 +369,7 @@ class Scenario:
     failure_specs: tuple[MachineFailureSpec, ...] = ()
     calendar_pm_specs: tuple[CalendarPMSpec, ...] = ()
     wafer_pm_specs: tuple[WaferPMSpec, ...] = ()
+    dataset_provenance: DatasetProvenanceSpec | None = None
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
