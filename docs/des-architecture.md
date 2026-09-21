@@ -1,9 +1,9 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.2`
-当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure，已验证 MC01～MC07
+适用版本：Simulation Contract `0.1.3`
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM，已验证 MC01～MC08
 
-锁定能力：PM、正式 SMT2020 loader
+锁定能力：正式 SMT2020 loader、优化器
 
 ## 1. 模块边界
 
@@ -16,6 +16,7 @@
 | Batch formation | `simulation/batch.py` | compatibility 分组、wafer 容量、确定性成员选择与 timeout 决策 |
 | CQT runtime | `simulation/cqt.py` | 独立约束索引、活动时钟、闭合记录、slack/risk 与期末暴露 |
 | Dedication runtime | `simulation/dedication.py` | 物理机绑定、硬可行性过滤、生命周期与初始 WIP 缺口审计 |
+| PM runtime | `simulation/pm.py` | 日历 PM occurrence、wafer counter、pending/active 状态与独立随机流 |
 | 随机流 | `simulation/random_streams.py` | 由 seed/stream/entity/occurrence 派生随机量 |
 | provenance | `simulation/provenance.py` | Contract、数据、commit、seed、配置、策略和终止条件 |
 | 派工接口 | `policies/base.py` | `DispatchPolicy.select(state, feasible_actions)` |
@@ -74,6 +75,9 @@ Machine:
 IDLE → PROCESSING → IDLE
 IDLE → SETTING_UP → PROCESSING → IDLE
 IDLE → PROCESSING(active_batch_id) → IDLE
+
+Availability:
+UP ↔ DOWN(downtime_cause=FAILURE/CALENDAR_PM/WAFER_PM)
 ```
 
 派工提交后，lot 与 machine 先被原子保留。内核集中调用 `SetupDurationResolver`：
@@ -108,6 +112,8 @@ Dedication 使用 `DedicationSpec(dedication_id, route_id, source_step_id, targe
 
 初始 WIP 若已经越过 source、尚未完成 target，则不猜测历史 machine。`LOT_RELEASE` 时记录 `DEDICATION_HISTORY_UNKNOWN` 与 `initial_wip_missing_dedication`，该 target 仅按普通 qualification 派工。fixed horizon 不清除活动绑定，结果通过 `active_dedication_bindings` 保留 terminal state。
 
+Failure 与 PM 共用 `_InterruptedActivity`、`activity_token`、暂停区间和 resume 路径。Calendar PM 可抢占 Setup、普通加工和整个 Batch；Wafer PM 只在真实完成后按 wafer 数置为 pending，并在下一派工前执行。每台 machine 同时只有一个 downtime owner，因此 PM finish 或 repair 只能释放自己拥有的停机。旧 completion 事件因 token 失效而无副作用。PM 与 Failure 的 occurrence、停机区间、计数和 provenance 分开记录。
+
 lot 完成一道工序时：
 
 1. 记录 `PROCESS_FINISH` 和设备占用区间；
@@ -123,7 +129,7 @@ lot 完成一道工序时：
 - `until_all_complete`：所有场景 lot 完成；事件日历提前耗尽时抛出 `SimulationError`，不返回伪完成结果。
 - `fixed_horizon`：处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP。
 
-MC01～MC07 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断 setup、batch、故障维修、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
+MC01～MC08 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断 setup、batch、故障/PM、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
 
 ## 5. Trace 与结果
 
@@ -159,7 +165,7 @@ CQT 结果另含 closed count、已闭合 violation count、total/max excess、o
 
 Dedication 结果包含已释放 binding records、期末 active binding snapshots、初始 WIP 历史缺口 audits，以及 binding/released/active/initial-unknown 计数；不改变 throughput、cycle time、CQT 或 terminal WIP 定义。
 
-`MachineStatistics` 分开记录 `processing_time`、`setup_time` 和 `idle_time`。固定 horizon 截断正在进行的 setup 时，已占用部分只累计到 `setup_time`；不会进入 `processing_time`。Lot cycle time 仍为 `completion-release`，因此实际经历的 setup 会自然计入。
+`MachineStatistics` 分开记录 `processing_time`、`setup_time`、`failure_downtime`、`pm_downtime` 和 `idle_time`。固定 horizon 截断正在进行的 setup 或 PM 时，只累计实际活动/停机片段；不会把 downtime 吞入 processing/setup/idle-up。Lot cycle time 仍为 `completion-release`。
 
 `BatchInterval` 记录 batch identity、machine、成员及 wafer 数、route/step、启动原因和物理起止。fixed horizon 截断活动 batch 时使用 `ActiveBatchSnapshot` 保留成员、开始和计划完成时刻，成员继续计入 terminal WIP。
 
@@ -173,8 +179,8 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | 动态 release | VERIFIED | MC02 |
 | FIFO queue | VERIFIED | MC02 |
 | route progression | VERIFIED | MC01 |
-| machine 占用区间 | VERIFIED | MC01～MC07 |
-| all-complete termination | VERIFIED | MC01～MC07 |
+| machine 占用区间 | VERIFIED | MC01～MC08 |
+| all-complete termination | VERIFIED | MC01～MC08 |
 | fixed horizon | VERIFIED | 普通加工、Setup、Batch terminal WIP 测试 |
 | 实体索引随机流 | VERIFIED | 调用顺序独立性测试 |
 | provenance | VERIFIED | 必填字段测试 |
@@ -192,6 +198,6 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | Dedication 初始 WIP、qualification 冲突与 terminal binding | VERIFIED | 审计、异常与 fixed-horizon 测试 |
 | Dedication 与 Setup/CQT/Batch 组合边界 | VERIFIED | 组合边界测试 |
 | Failure | VERIFIED | MC07 显式事件、抢占继续、stale completion 与终态快照 |
-| PM | LOCKED | MC08 之前不得进入运行路径 |
+| PM | VERIFIED | MC08 Calendar/Wafer PM、抢占恢复、计数、重叠、同刻优先级与 fixed horizon |
 
-MC07 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。
+MC01～MC08 全部通过后，M1 状态仅为 `awaiting_closure_audit`。正式数据链、provenance 和契约一致性完成闭环审计前，优化器仍保持禁用。

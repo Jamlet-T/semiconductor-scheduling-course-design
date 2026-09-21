@@ -11,6 +11,7 @@ TerminationMode = Literal["until_all_complete", "fixed_horizon"]
 BatchCompatibilityRule = Literal["crit_sameroutestep"]
 BatchMemberSelectionRule = Literal["fifo_queue_time_lot_id"]
 FailureModelType = Literal["scripted", "stochastic"]
+CalendarPMModelType = Literal["scripted", "periodic"]
 TimeDistributionKind = Literal["constant", "uniform"]
 
 
@@ -81,6 +82,76 @@ class MachineFailureSpec:
                 raise ValueError("stochastic failure 必须提供 interval 和 repair")
         else:
             raise ValueError(f"不支持的 failure model_type：{self.model_type}")
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptedPMSpec:
+    """确定性日历 PM occurrence。"""
+
+    start_time: float
+    duration: float
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.start_time) or self.start_time < 0:
+            raise ValueError("scripted PM start_time 必须为有限非负数")
+        if not isfinite(self.duration) or self.duration <= 0:
+            raise ValueError("scripted PM duration 必须为有限正数")
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarPMSpec:
+    """按绝对时刻或 calendar interval 触发的预防维护。"""
+
+    pm_id: str
+    machine_id: str
+    model_type: CalendarPMModelType
+    scripted_occurrences: tuple[ScriptedPMSpec, ...] = ()
+    first_start_time: float | None = None
+    interval: TimeDistributionSpec | None = None
+    duration: TimeDistributionSpec | None = None
+
+    def __post_init__(self) -> None:
+        if not self.pm_id or not self.machine_id:
+            raise ValueError("calendar PM identity 不能为空")
+        if self.model_type == "scripted":
+            if not self.scripted_occurrences:
+                raise ValueError("scripted calendar PM 至少需要一个 occurrence")
+            if any(value is not None for value in (self.first_start_time, self.interval, self.duration)):
+                raise ValueError("scripted calendar PM 不接受周期字段")
+            starts = [item.start_time for item in self.scripted_occurrences]
+            if starts != sorted(starts) or len(starts) != len(set(starts)):
+                raise ValueError("scripted PM start_time 必须严格递增")
+        elif self.model_type == "periodic":
+            if self.scripted_occurrences:
+                raise ValueError("periodic calendar PM 不接受 scripted occurrence")
+            if self.first_start_time is None or not isfinite(self.first_start_time) or self.first_start_time < 0:
+                raise ValueError("periodic calendar PM 需要有限非负 first_start_time")
+            if self.interval is None or self.duration is None:
+                raise ValueError("periodic calendar PM 需要 interval 和 duration")
+        else:
+            raise ValueError(f"不支持的 calendar PM model_type：{self.model_type}")
+
+
+@dataclass(frozen=True, slots=True)
+class WaferPMSpec:
+    """物理加工完成后按累计 wafer 触发的预防维护。"""
+
+    pm_id: str
+    machine_id: str
+    threshold_wafers: int
+    duration: TimeDistributionSpec
+    initial_counter_wafers: int = 0
+    reset_rule: Literal["reset_zero"] = "reset_zero"
+
+    def __post_init__(self) -> None:
+        if not self.pm_id or not self.machine_id:
+            raise ValueError("wafer PM identity 不能为空")
+        if self.threshold_wafers <= 0:
+            raise ValueError("wafer PM threshold_wafers 必须为正")
+        if not 0 <= self.initial_counter_wafers < self.threshold_wafers:
+            raise ValueError("wafer PM initial counter 必须位于 [0, threshold)")
+        if self.reset_rule != "reset_zero":
+            raise ValueError("当前 wafer PM 仅支持 reset_zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +338,8 @@ class Scenario:
     cqt_constraints: tuple[CQTSpec, ...] = ()
     dedication_constraints: tuple[DedicationSpec, ...] = ()
     failure_specs: tuple[MachineFailureSpec, ...] = ()
+    calendar_pm_specs: tuple[CalendarPMSpec, ...] = ()
+    wafer_pm_specs: tuple[WaferPMSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -357,3 +430,15 @@ class Scenario:
                 "failure spec 引用了未知设备 "
                 f"{sorted(unknown_failure_machines)}"
             )
+        pm_ids = [spec.pm_id for spec in self.calendar_pm_specs + self.wafer_pm_specs]
+        if len(pm_ids) != len(set(pm_ids)):
+            raise ValueError("PM pm_id 不能重复")
+        calendar_pm_machines = [spec.machine_id for spec in self.calendar_pm_specs]
+        wafer_pm_machines = [spec.machine_id for spec in self.wafer_pm_specs]
+        if len(calendar_pm_machines) != len(set(calendar_pm_machines)):
+            raise ValueError("每台 machine 最多一条 calendar PM spec")
+        if len(wafer_pm_machines) != len(set(wafer_pm_machines)):
+            raise ValueError("每台 machine 最多一条 wafer PM spec")
+        unknown_pm_machines = set(calendar_pm_machines + wafer_pm_machines) - known_machines
+        if unknown_pm_machines:
+            raise ValueError(f"PM spec 引用了未知设备 {sorted(unknown_pm_machines)}")

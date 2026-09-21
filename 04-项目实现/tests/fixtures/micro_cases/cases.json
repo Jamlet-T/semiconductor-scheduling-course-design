@@ -1,9 +1,9 @@
 {
   "schema_version": "0.1.0",
-  "contract_version": "0.1.2",
-  "event_priority_contract_version": "0.1.2",
+  "contract_version": "0.1.3",
+  "event_priority_contract_version": "0.1.3",
   "time_unit": "minute",
-  "status": "mc01_mc07_verified",
+  "status": "mc01_mc08_verified_awaiting_closure_audit",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
@@ -960,8 +960,70 @@
     },
     {
       "id": "MC08_TERMINAL_EXPOSURE",
-      "implementation_status": "locked",
-      "purpose": "完成结果、期末 WIP 和 WIP 积分",
+      "implementation_status": "verified",
+      "purpose": "完成结果、期末 WIP、WIP 积分与 Calendar/Wafer PM",
+      "pm_variants": [
+        {
+          "id": "CALENDAR_PREEMPT_RESUME",
+          "machine": "M1",
+          "lot": {"id": "L1", "release": 0, "quantity_wafers": 25, "process": 20},
+          "calendar_pm": {"pm_id": "PM-CAL-M1", "start": 8, "duration": 5},
+          "horizon": 30,
+          "manual_check": {
+            "planned_finish": 20,
+            "pm_start": 8,
+            "processed_before_pm": 8,
+            "remaining_processing": 12,
+            "pm_finish_and_resume": 13,
+            "new_finish": 25
+          },
+          "expected_trace": [
+            {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+            {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 8, "event": "PROCESS_SUSPEND", "lot": "L1", "machine": "M1", "step": 1, "interrupted_activity": "PROCESS", "remaining_duration": 12, "activity_token": 2, "downtime_cause": "CALENDAR_PM", "pm_id": "PM-CAL-M1", "pm_trigger": "CALENDAR_PM", "pm_occurrence": 0, "pm_duration": 5},
+            {"time": 8, "event": "PM_START", "machine": "M1", "interrupted_activity": "PROCESS", "remaining_duration": 12, "activity_token": 2, "downtime_cause": "CALENDAR_PM", "pm_id": "PM-CAL-M1", "pm_trigger": "CALENDAR_PM", "pm_occurrence": 0, "pm_duration": 5},
+            {"time": 13, "event": "PM_FINISH", "machine": "M1", "interrupted_activity": "PROCESS", "remaining_duration": 12, "downtime_cause": "CALENDAR_PM", "pm_id": "PM-CAL-M1", "pm_trigger": "CALENDAR_PM", "pm_occurrence": 0, "pm_duration": 5},
+            {"time": 13, "event": "PROCESS_RESUME", "lot": "L1", "machine": "M1", "step": 1, "interrupted_activity": "PROCESS", "remaining_duration": 12, "activity_token": 3, "downtime_cause": "CALENDAR_PM", "pm_id": "PM-CAL-M1", "pm_trigger": "CALENDAR_PM", "pm_occurrence": 0, "pm_duration": 5},
+            {"time": 25, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 25, "event": "LOT_COMPLETE", "lot": "L1", "step": 1}
+          ]
+        },
+        {
+          "id": "WAFER_THRESHOLD",
+          "machine": "M1",
+          "lots": [
+            {"id": "L1", "release": 0, "quantity_wafers": 25, "process": 2},
+            {"id": "L2", "release": 0, "quantity_wafers": 25, "process": 2}
+          ],
+          "wafer_pm": {"pm_id": "PM-WAFER-M1", "initial_counter_wafers": 100, "threshold_wafers": 125, "duration": 3, "reset_rule": "reset_zero"},
+          "horizon": 10,
+          "manual_check": {
+            "counter_before": 100,
+            "completed_wafers": 25,
+            "counter_after": 125,
+            "pm_start": 2,
+            "pm_finish": 5,
+            "counter_after_pm": 0,
+            "next_lot_start": 5
+          },
+          "expected_trace": [
+            {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+            {"time": 0, "event": "LOT_RELEASE", "lot": "L2", "step": 1},
+            {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 2, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+            {"time": 2, "event": "LOT_COMPLETE", "lot": "L1", "step": 1},
+            {"time": 2, "event": "PM_DUE", "lot": "L1", "machine": "M1", "step": 1, "downtime_cause": "WAFER_PM", "pm_id": "PM-WAFER-M1", "pm_trigger": "WAFER_PM", "pm_occurrence": 0, "pm_duration": 3, "wafer_counter_before": 100, "wafer_counter_after": 125, "wafer_threshold": 125, "processed_wafers": 25},
+            {"time": 2, "event": "PM_START", "machine": "M1", "activity_token": 1, "downtime_cause": "WAFER_PM", "pm_id": "PM-WAFER-M1", "pm_trigger": "WAFER_PM", "pm_occurrence": 0, "pm_duration": 3, "wafer_counter_before": 100, "wafer_counter_after": 125, "wafer_threshold": 125, "processed_wafers": 25},
+            {"time": 5, "event": "PM_FINISH", "machine": "M1", "downtime_cause": "WAFER_PM", "pm_id": "PM-WAFER-M1", "pm_trigger": "WAFER_PM", "pm_occurrence": 0, "pm_duration": 3, "wafer_counter_before": 125, "wafer_counter_after": 0, "wafer_threshold": 125},
+            {"time": 5, "event": "DISPATCH", "lot": "L2", "machine": "M1", "step": 1},
+            {"time": 5, "event": "PROCESS_START", "lot": "L2", "machine": "M1", "step": 1},
+            {"time": 7, "event": "PROCESS_FINISH", "lot": "L2", "machine": "M1", "step": 1},
+            {"time": 7, "event": "LOT_COMPLETE", "lot": "L2", "step": 1}
+          ]
+        }
+      ],
       "termination": {"mode": "fixed_horizon", "horizon": 30},
       "machines": [{"id": "M1"}, {"id": "M2"}],
       "lots": [

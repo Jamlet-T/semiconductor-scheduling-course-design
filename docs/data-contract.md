@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.2`
+版本：`0.1.3`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC07 已进入实现并验证；PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；正式 SMT2020 loader 接入仍需 Closure Audit。
 
 ## 1. 证据层级与统一约定
 
@@ -223,11 +223,14 @@ route.STIME
 - 故障在发生时立即中断当前 setup/process/batch，修复后从剩余时间继续；
 - `mttf_by_cal` 首次从 `t=0` 计，后续从上次维修完成时刻重新累计，DOWN 时不接受嵌套有效故障；
 - 日历 PM 到点时采用同样的 preemptive-resume；
-- 按 wafer 触发的 PM 在造成计数越界的加工完成后、机台再次派工前执行；
+- 按 wafer 触发的 PM 只在真实加工完成后按 lot wafer 或 batch 总 wafer 累计，在达到/越过阈值后、机台再次派工前执行；
+- wafer PM 完成后 counter 归零，超过阈值的余量不结转；
+- 每台 machine 同时只有一个 active downtime owner；active downtime 期间到达的 failure/calendar PM occurrence 无效；PM 期间被抑制的 stochastic failure 在 PM 完成后重新起算下一间隔，wafer PM pending 保留到 owner 完成后执行；
+- Failure 与 PM 同刻时 Failure 先取得 downtime ownership；
 - 所有被中断活动的旧完成事件必须失效；
-- failure、repair、pm_duration 使用独立实体索引随机流。
+- failure、repair、pm_interval、pm_duration 使用独立实体索引随机流。
 
-这些选择与 PySCFabSim 延后在制完成事件的参考行为相容。Failure 已由 MC07 验证；PM 仍需独立 MC08 之前的约定算例验证。当前状态为 `FAILURE VERIFIED-MC07 / PM NOT-IMPLEMENTED`。
+这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset 和 overlap ownership 是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME`；正式 SMT2020 loader 尚未装配 PM calendar/attach/FOA 链。
 
 ## 12. Transport
 
@@ -254,7 +257,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.2",
+  "simulation_contract_version": "0.1.3",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,

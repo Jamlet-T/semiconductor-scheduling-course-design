@@ -119,7 +119,9 @@ failure(M1)=5, repair_duration=3
 
 在 t=13 同时安排 `PROCESS_FINISH(L1)`、`FAILURE_START(M1)`、`LOT_RELEASE(L2)`：期望 L1 先完成，故障随后生效，L2 被释放但不能在维修前派到 M1。PM 冲突另用相同结构验证其最终契约。
 
-### MC08：期末暴露和 WIP 积分
+### MC08：期末暴露、WIP 积分与 PM
+
+实现状态：`VERIFIED`（Calendar/Wafer PM、PROCESS/SETUP/BATCH 抢占恢复、wafer 计数、停机重叠、同刻优先级、Dedication/CQT 组合和 fixed-horizon 快照已通过）。M1 仍为 `awaiting_closure_audit`。
 
 固定终点 `H=30`，两台独立设备：
 
@@ -143,6 +145,25 @@ mean_wip=(2*10 + 1*20)/30 = 4/3
 ```
 
 L2 不能因为未完成而从结果中消失。
+
+PM 子例一（Calendar PM）：
+
+```text
+L1: process=20, start=0
+calendar PM: start=8, duration=5
+```
+
+期望：t=8 暂停且剩余12分钟，t=13 恢复，t=25 完成；旧 `PROCESS_FINISH@20` 无效。
+
+PM 子例二（wafer threshold）：
+
+```text
+counter_initial=100 wafers, threshold=125, reset=0
+L1/L2: each 25 wafers, process=2
+PM duration=3
+```
+
+期望：L1 在 t=2 完成后 counter=125，PM 在 `[2,5]` 执行并归零；L2 在 t=5 才能开始，t=7 完成，期末 counter=25。Batch 按总 wafer 一次累计，活动中断不提前或重复计数。
 
 ## 4. PySCFabSim 审计判据
 

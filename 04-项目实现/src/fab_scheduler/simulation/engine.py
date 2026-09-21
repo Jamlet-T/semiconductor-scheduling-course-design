@@ -53,6 +53,13 @@ from fab_scheduler.simulation.provenance import (
 )
 from fab_scheduler.simulation.random_streams import EntityRandomStreams
 from fab_scheduler.simulation.setup import SetupDurationResolver
+from fab_scheduler.simulation.pm import (
+    PM_RUNTIME_SCHEMA_VERSION,
+    PMOccurrence,
+    PMRuntime,
+    WaferPMDue,
+    WaferPMStateSnapshot,
+)
 from fab_scheduler.simulation.failure import (
     FAILURE_RUNTIME_SCHEMA_VERSION,
     FailureOccurrence,
@@ -77,6 +84,12 @@ class MachineStatus(str, Enum):
 class MachineAvailability(str, Enum):
     UP = "UP"
     DOWN = "DOWN"
+
+
+class DowntimeCause(str, Enum):
+    FAILURE = "FAILURE"
+    CALENDAR_PM = "CALENDAR_PM"
+    WAFER_PM = "WAFER_PM"
 
 
 class ActivityKind(str, Enum):
@@ -121,6 +134,10 @@ class _MachineRuntime:
     downtime_started_at: float | None = None
     repair_ends_at: float | None = None
     failure_count: int = 0
+    downtime_cause: DowntimeCause | None = None
+    downtime_id: str | None = None
+    downtime_ends_at: float | None = None
+    pm_count: int = 0
 
 
 @dataclass(slots=True)
@@ -198,6 +215,16 @@ class DowntimeInterval:
 
 
 @dataclass(frozen=True, slots=True)
+class PMInterval:
+    pm_id: str
+    machine_id: str
+    occurrence_index: int
+    trigger_type: str
+    start: float
+    finish: float
+
+
+@dataclass(frozen=True, slots=True)
 class MachineFailureSnapshot:
     machine_id: str
     availability: str
@@ -207,6 +234,10 @@ class MachineFailureSnapshot:
     remaining_activity_time: float | None
     lot_id: str | None
     batch_id: str | None
+    downtime_cause: str | None = None
+    downtime_id: str | None = None
+    remaining_downtime_time: float | None = None
+    wafer_pm_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +255,12 @@ class MachineStatistics:
     remaining_repair_time: float | None = None
     interrupted_activity_kind: str | None = None
     remaining_activity_time: float | None = None
+    failure_downtime: float = 0.0
+    pm_downtime: float = 0.0
+    pm_count: int = 0
+    downtime_cause: str | None = None
+    wafer_counter: int | None = None
+    wafer_pm_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,9 +272,33 @@ class SimulationMetrics:
     throughput_lots_per_minute: float
     terminal_wip_lots: int
     end_time: float
+    cycle_time_coverage: float = 0.0
+    remaining_work_minutes: float = 0.0
+    lateness_exposure_minutes: float = 0.0
+    mean_wip: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """保持 MC01-MC07 已冻结的基础 KPI 序列化契约。"""
+
+        return {
+            "completed_lots": self.completed_lots,
+            "released_lots": self.released_lots,
+            "completion_ratio": self.completion_ratio,
+            "mean_cycle_time_completed": self.mean_cycle_time_completed,
+            "throughput_lots_per_minute": self.throughput_lots_per_minute,
+            "terminal_wip_lots": self.terminal_wip_lots,
+            "end_time": self.end_time,
+        }
+
+    def terminal_exposure_to_dict(self) -> dict[str, float]:
+        """输出 MC08 终态暴露指标，不改变既有基础 KPI 字典。"""
+
+        return {
+            "cycle_time_coverage": self.cycle_time_coverage,
+            "remaining_work_minutes": self.remaining_work_minutes,
+            "lateness_exposure_minutes": self.lateness_exposure_minutes,
+            "mean_wip": self.mean_wip,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +323,11 @@ class SimulationResult:
     machine_failure_snapshots: tuple[MachineFailureSnapshot, ...]
     failure_count: int
     total_downtime: float
+    total_failure_downtime: float
+    pm_intervals: tuple[PMInterval, ...]
+    wafer_pm_states: tuple[WaferPMStateSnapshot, ...]
+    pm_count: int
+    total_pm_downtime: float
 
     def trace_as_dicts(self) -> list[dict[str, Any]]:
         return [record.to_dict() for record in self.trace]
@@ -296,6 +362,9 @@ class SimulationResult:
             "PROCESS_RESUME",
             "SETUP_RESUME",
             "BATCH_RESUME",
+            "PM_DUE",
+            "PM_START",
+            "PM_FINISH",
         }
         rows = []
         for record in self.trace:
@@ -359,6 +428,19 @@ class SimulationResult:
                         "remaining_duration": record.remaining_duration,
                         "repair_duration": record.repair_duration,
                         "activity_token": record.activity_token,
+                        "downtime_cause": (
+                            record.downtime_cause
+                            if record.pm_id is not None
+                            else None
+                        ),
+                        "pm_id": record.pm_id,
+                        "pm_trigger": record.pm_trigger_type,
+                        "pm_occurrence": record.pm_occurrence_index,
+                        "pm_duration": record.pm_duration,
+                        "wafer_counter_before": record.wafer_counter_before,
+                        "wafer_counter_after": record.wafer_counter_after,
+                        "wafer_threshold": record.wafer_threshold,
+                        "processed_wafers": record.processed_wafers,
                     }.items()
                     if value is not None
                 }
@@ -395,6 +477,7 @@ class Simulator:
         self._setup_intervals: list[SetupInterval] = []
         self._batch_intervals: list[BatchInterval] = []
         self._downtime_intervals: list[DowntimeInterval] = []
+        self._pm_intervals: list[PMInterval] = []
         self._active_batches: dict[str, _ActiveBatch] = {}
         self._batch_formation = BatchFormation()
         self._next_batch_seq = 1
@@ -414,6 +497,13 @@ class Simulator:
             self.random_streams,
         )
         self._active_failure_occurrence: dict[str, FailureOccurrence] = {}
+        self._failure_suppressed_by_pm: dict[str, FailureOccurrence] = {}
+        self._pm_runtime = PMRuntime(
+            scenario.calendar_pm_specs,
+            scenario.wafer_pm_specs,
+            self.random_streams,
+        )
+        self._active_pm_occurrence: dict[str, PMOccurrence] = {}
         self._lots = {
             lot.lot_id: _LotRuntime(
                 spec=lot,
@@ -434,6 +524,8 @@ class Simulator:
     def run(self) -> SimulationResult:
         for occurrence in self._failure_schedule.initial_occurrences():
             self._schedule_failure(occurrence)
+        for occurrence in self._pm_runtime.initial_calendar_occurrences():
+            self._schedule_pm(occurrence)
         for lot in sorted(
             self.scenario.lots,
             key=lambda item: (item.release_time, item.lot_id),
@@ -481,6 +573,12 @@ class Simulator:
                     "failure_interval": "failure",
                     "repair_duration": "repair",
                     "identity": "machine_id+occurrence_index",
+                },
+                "pm_runtime_schema_version": PM_RUNTIME_SCHEMA_VERSION,
+                "pm_random_streams": {
+                    "interval": "pm_interval",
+                    "duration": "pm_duration",
+                    "identity": "pm_id+occurrence_index",
                 },
             },
             dispatch_policy=self.policy.name,
@@ -542,6 +640,13 @@ class Simulator:
             machine_failure_snapshots=self._build_failure_snapshots(end_time),
             failure_count=sum(machine.failure_count for machine in self._machines.values()),
             total_downtime=sum(item.downtime for item in machine_statistics.values()),
+            total_failure_downtime=sum(
+                item.failure_downtime for item in machine_statistics.values()
+            ),
+            pm_intervals=tuple(self._pm_intervals),
+            wafer_pm_states=self._pm_runtime.snapshots,
+            pm_count=sum(machine.pm_count for machine in self._machines.values()),
+            total_pm_downtime=sum(item.pm_downtime for item in machine_statistics.values()),
         )
 
     def query_cqt_state(
@@ -646,6 +751,21 @@ class Simulator:
             },
         )
 
+    def _schedule_pm(self, occurrence: PMOccurrence) -> None:
+        self._schedule(
+            time=occurrence.start_time,
+            event_type=EventType.PM_START,
+            entity_id=occurrence.machine_id,
+            payload={
+                "pm_id": occurrence.pm_id,
+                "machine_id": occurrence.machine_id,
+                "occurrence_index": occurrence.occurrence_index,
+                "duration": occurrence.duration,
+                "trigger_type": occurrence.trigger_type,
+                "model_type": occurrence.model_type,
+            },
+        )
+
     def _handle(self, event: Event) -> None:
         if event.event_type is EventType.LOT_RELEASE:
             self._handle_release(event)
@@ -663,6 +783,10 @@ class Simulator:
             self._handle_failure_start(event)
         elif event.event_type is EventType.REPAIR_FINISH:
             self._handle_repair_finish(event)
+        elif event.event_type is EventType.PM_START:
+            self._handle_pm_start(event)
+        elif event.event_type is EventType.PM_FINISH:
+            self._handle_pm_finish(event)
         else:
             raise SimulationError(f"尚未实现事件类型：{event.event_type}")
 
@@ -717,6 +841,12 @@ class Simulator:
             model_type=event.payload["model_type"],
         )
         if machine.availability is MachineAvailability.DOWN:
+            if (
+                machine.downtime_cause
+                in {DowntimeCause.CALENDAR_PM, DowntimeCause.WAFER_PM}
+                and occurrence.model_type == "stochastic"
+            ):
+                self._failure_suppressed_by_pm[machine_id] = occurrence
             self._record(
                 event_type="FAILURE_START_STALE",
                 priority=event.priority,
@@ -730,57 +860,20 @@ class Simulator:
             )
             return
 
-        interrupted: _InterruptedActivity | None = None
-        if machine.status is not MachineStatus.IDLE:
-            finish = machine.scheduled_activity_finish
-            if finish is None or finish <= self.current_time:
-                raise SimulationError("故障时活动缺少有效计划完成时刻")
-            remaining = finish - self.current_time
-            if machine.status is MachineStatus.SETTING_UP:
-                kind = ActivityKind.SETUP
-                self._append_setup_segment(machine, self.current_time)
-                suspend_event = "SETUP_SUSPEND"
-            elif machine.active_batch_id is not None:
-                kind = ActivityKind.BATCH
-                batch = self._active_batches[machine.active_batch_id]
-                if machine.processing_started_at is None:
-                    raise SimulationError("Batch 故障时缺少活动段起点")
-                batch.accumulated_processing_time += (
-                    self.current_time - machine.processing_started_at
-                )
-                batch.scheduled_finish_time = None
-                suspend_event = "BATCH_SUSPEND"
-            else:
-                kind = ActivityKind.PROCESS
-                self._append_processing_segment(machine, self.current_time)
-                suspend_event = "PROCESS_SUSPEND"
-            interrupted = _InterruptedActivity(kind, remaining, self.current_time)
-            machine.interrupted_activity = interrupted
-            machine.activity_token += 1
-            machine.scheduled_activity_finish = None
-            machine.processing_started_at = None
-            machine.setup_started_at = None
-            self._record(
-                event_type=suspend_event,
-                priority=event.priority,
-                cause_event_seq=event.seq,
-                lot=(self._lots[machine.lot_id] if machine.lot_id else None),
-                operation=self._machine_operation(machine),
-                machine_id=machine_id,
-                batch_id=machine.active_batch_id,
-                failure_occurrence_index=occurrence.occurrence_index,
-                failure_model_type=occurrence.model_type,
-                interrupted_activity_kind=kind.value,
-                remaining_duration=remaining,
-                activity_token=machine.activity_token,
-                state_before=f"{kind.value}:ACTIVE",
-                state_after=f"{kind.value}:SUSPENDED",
-            )
+        interrupted = self._suspend_activity(
+            event=event,
+            machine=machine,
+            downtime_cause=DowntimeCause.FAILURE,
+            failure_occurrence=occurrence,
+        )
 
         machine.availability = MachineAvailability.DOWN
         machine.downtime_started_at = self.current_time
         machine.repair_ends_at = self.current_time + occurrence.repair_duration
         machine.failure_count += 1
+        machine.downtime_cause = DowntimeCause.FAILURE
+        machine.downtime_id = f"FAILURE:{occurrence.occurrence_index}"
+        machine.downtime_ends_at = machine.repair_ends_at
         self._active_failure_occurrence[machine_id] = occurrence
         self._record(
             event_type="FAILURE_START",
@@ -794,6 +887,7 @@ class Simulator:
             remaining_duration=(interrupted.remaining_duration if interrupted else None),
             repair_duration=occurrence.repair_duration,
             activity_token=machine.activity_token,
+            downtime_cause=DowntimeCause.FAILURE.value,
             state_before="AVAILABILITY:UP",
             state_after="AVAILABILITY:DOWN",
         )
@@ -841,6 +935,9 @@ class Simulator:
         machine.availability = MachineAvailability.UP
         machine.downtime_started_at = None
         machine.repair_ends_at = None
+        machine.downtime_ends_at = None
+        machine.downtime_cause = None
+        machine.downtime_id = None
         self._active_failure_occurrence.pop(machine_id)
         self._record(
             event_type="REPAIR_COMPLETE",
@@ -864,8 +961,270 @@ class Simulator:
         if next_occurrence is not None:
             self._schedule_failure(next_occurrence)
         if interrupted is None:
+            if self._schedule_pending_wafer_pm(machine_id):
+                return
             self._ensure_dispatch_barrier()
             return
+        self._resume_activity(event=event, machine=machine)
+
+    def _handle_pm_start(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        machine = self._machines[machine_id]
+        occurrence = PMOccurrence(
+            pm_id=event.payload["pm_id"],
+            machine_id=machine_id,
+            occurrence_index=event.payload["occurrence_index"],
+            start_time=event.time,
+            duration=event.payload["duration"],
+            trigger_type=event.payload["trigger_type"],
+            model_type=event.payload["model_type"],
+        )
+        if occurrence.trigger_type == DowntimeCause.CALENDAR_PM.value:
+            next_occurrence = self._pm_runtime.next_calendar_occurrence(occurrence)
+            if next_occurrence is not None:
+                self._schedule_pm(next_occurrence)
+        if machine.availability is MachineAvailability.DOWN:
+            event_type = (
+                "PM_START_DEFERRED"
+                if occurrence.trigger_type == DowntimeCause.WAFER_PM.value
+                else "PM_START_STALE"
+            )
+            self._record(
+                event_type=event_type,
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                machine_id=machine_id,
+                downtime_cause=machine.downtime_cause.value if machine.downtime_cause else None,
+                pm_id=occurrence.pm_id,
+                pm_trigger_type=occurrence.trigger_type,
+                pm_occurrence_index=occurrence.occurrence_index,
+                pm_duration=occurrence.duration,
+                state_before="MACHINE:DOWN",
+                state_after=("PM:PENDING" if event_type.endswith("DEFERRED") else "NO_EFFECT"),
+            )
+            return
+
+        wafer_due: WaferPMDue | None = None
+        cause = DowntimeCause(occurrence.trigger_type)
+        if cause is DowntimeCause.WAFER_PM:
+            wafer_due = self._pm_runtime.start_wafer_pm(
+                machine_id,
+                occurrence.occurrence_index,
+            )
+        interrupted = self._suspend_activity(
+            event=event,
+            machine=machine,
+            downtime_cause=cause,
+            pm_occurrence=occurrence,
+        )
+        machine.availability = MachineAvailability.DOWN
+        machine.downtime_started_at = self.current_time
+        machine.downtime_cause = cause
+        machine.downtime_id = f"{occurrence.pm_id}:{occurrence.occurrence_index}"
+        machine.downtime_ends_at = self.current_time + occurrence.duration
+        machine.pm_count += 1
+        self._active_pm_occurrence[machine_id] = occurrence
+        self._record(
+            event_type="PM_START",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            machine_id=machine_id,
+            batch_id=machine.active_batch_id,
+            downtime_cause=cause.value,
+            pm_id=occurrence.pm_id,
+            pm_trigger_type=occurrence.trigger_type,
+            pm_occurrence_index=occurrence.occurrence_index,
+            pm_duration=occurrence.duration,
+            wafer_counter_before=(wafer_due.counter_before if wafer_due else None),
+            wafer_counter_after=(wafer_due.counter_after if wafer_due else None),
+            wafer_threshold=(wafer_due.threshold_wafers if wafer_due else None),
+            processed_wafers=(wafer_due.processed_wafers if wafer_due else None),
+            interrupted_activity_kind=(interrupted.kind.value if interrupted else None),
+            remaining_duration=(interrupted.remaining_duration if interrupted else None),
+            activity_token=machine.activity_token,
+            state_before="AVAILABILITY:UP",
+            state_after="AVAILABILITY:DOWN",
+        )
+        self._schedule(
+            time=machine.downtime_ends_at,
+            event_type=EventType.PM_FINISH,
+            entity_id=machine_id,
+            payload={
+                "pm_id": occurrence.pm_id,
+                "machine_id": machine_id,
+                "occurrence_index": occurrence.occurrence_index,
+                "duration": occurrence.duration,
+                "trigger_type": occurrence.trigger_type,
+                "model_type": occurrence.model_type,
+            },
+        )
+
+    def _handle_pm_finish(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        machine = self._machines[machine_id]
+        occurrence = self._active_pm_occurrence.get(machine_id)
+        if (
+            machine.availability is not MachineAvailability.DOWN
+            or machine.downtime_cause not in {DowntimeCause.CALENDAR_PM, DowntimeCause.WAFER_PM}
+            or occurrence is None
+            or occurrence.pm_id != event.payload["pm_id"]
+            or occurrence.occurrence_index != event.payload["occurrence_index"]
+        ):
+            self._record(
+                event_type="PM_FINISH_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                machine_id=machine_id,
+                pm_id=event.payload["pm_id"],
+                pm_occurrence_index=event.payload["occurrence_index"],
+                state_before="STALE_PM_FINISH",
+                state_after="NO_EFFECT",
+            )
+            return
+        if machine.downtime_started_at is None:
+            raise SimulationError("PM 完成时缺少 downtime 起点")
+        self._pm_intervals.append(
+            PMInterval(
+                pm_id=occurrence.pm_id,
+                machine_id=machine_id,
+                occurrence_index=occurrence.occurrence_index,
+                trigger_type=occurrence.trigger_type,
+                start=machine.downtime_started_at,
+                finish=self.current_time,
+            )
+        )
+        interrupted = machine.interrupted_activity
+        wafer_due = None
+        if occurrence.trigger_type == DowntimeCause.WAFER_PM.value:
+            wafer_due = self._pm_runtime.finish_wafer_pm(
+                machine_id,
+                occurrence.occurrence_index,
+            )
+        machine.availability = MachineAvailability.UP
+        machine.downtime_started_at = None
+        machine.downtime_cause = None
+        machine.downtime_id = None
+        machine.downtime_ends_at = None
+        self._active_pm_occurrence.pop(machine_id)
+        suppressed_failure = self._failure_suppressed_by_pm.pop(
+            machine_id,
+            None,
+        )
+        self._record(
+            event_type="PM_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            machine_id=machine_id,
+            batch_id=machine.active_batch_id,
+            downtime_cause=occurrence.trigger_type,
+            pm_id=occurrence.pm_id,
+            pm_trigger_type=occurrence.trigger_type,
+            pm_occurrence_index=occurrence.occurrence_index,
+            pm_duration=occurrence.duration,
+            wafer_counter_before=(wafer_due.counter_after if wafer_due else None),
+            wafer_counter_after=(0 if wafer_due else None),
+            wafer_threshold=(wafer_due.threshold_wafers if wafer_due else None),
+            interrupted_activity_kind=(interrupted.kind.value if interrupted else None),
+            remaining_duration=(interrupted.remaining_duration if interrupted else None),
+            state_before="AVAILABILITY:DOWN",
+            state_after="AVAILABILITY:UP",
+        )
+        if suppressed_failure is not None:
+            next_failure = self._failure_schedule.next_after_repair(
+                machine_id=machine_id,
+                occurrence_index=suppressed_failure.occurrence_index,
+                repaired_at=self.current_time,
+            )
+            if next_failure is not None:
+                self._schedule_failure(next_failure)
+        if interrupted is not None:
+            self._resume_activity(event=event, machine=machine)
+            return
+        if self._schedule_pending_wafer_pm(machine_id):
+            return
+        self._ensure_dispatch_barrier()
+
+    def _schedule_pending_wafer_pm(self, machine_id: str) -> bool:
+        due = self._pm_runtime.pending_for_machine(machine_id)
+        if due is None:
+            return False
+        self._schedule_pm(
+            PMOccurrence(
+                pm_id=due.pm_id,
+                machine_id=machine_id,
+                occurrence_index=due.occurrence_index,
+                start_time=self.current_time,
+                duration=due.duration,
+                trigger_type=DowntimeCause.WAFER_PM.value,
+                model_type="wafer_threshold",
+            )
+        )
+        return True
+
+    def _suspend_activity(
+        self,
+        *,
+        event: Event,
+        machine: _MachineRuntime,
+        downtime_cause: DowntimeCause,
+        failure_occurrence: FailureOccurrence | None = None,
+        pm_occurrence: PMOccurrence | None = None,
+    ) -> _InterruptedActivity | None:
+        if machine.status is MachineStatus.IDLE:
+            return None
+        finish = machine.scheduled_activity_finish
+        if finish is None or finish <= self.current_time:
+            raise SimulationError("停机时活动缺少有效计划完成时刻")
+        remaining = finish - self.current_time
+        if machine.status is MachineStatus.SETTING_UP:
+            kind = ActivityKind.SETUP
+            self._append_setup_segment(machine, self.current_time)
+            suspend_event = "SETUP_SUSPEND"
+        elif machine.active_batch_id is not None:
+            kind = ActivityKind.BATCH
+            batch = self._active_batches[machine.active_batch_id]
+            if machine.processing_started_at is None:
+                raise SimulationError("Batch 停机时缺少活动段起点")
+            batch.accumulated_processing_time += self.current_time - machine.processing_started_at
+            batch.scheduled_finish_time = None
+            suspend_event = "BATCH_SUSPEND"
+        else:
+            kind = ActivityKind.PROCESS
+            self._append_processing_segment(machine, self.current_time)
+            suspend_event = "PROCESS_SUSPEND"
+        interrupted = _InterruptedActivity(kind, remaining, self.current_time)
+        machine.interrupted_activity = interrupted
+        machine.activity_token += 1
+        machine.scheduled_activity_finish = None
+        machine.processing_started_at = None
+        machine.setup_started_at = None
+        self._record(
+            event_type=suspend_event,
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=(self._lots[machine.lot_id] if machine.lot_id else None),
+            operation=self._machine_operation(machine),
+            machine_id=machine.machine_id,
+            batch_id=machine.active_batch_id,
+            failure_occurrence_index=(failure_occurrence.occurrence_index if failure_occurrence else None),
+            failure_model_type=(failure_occurrence.model_type if failure_occurrence else None),
+            downtime_cause=downtime_cause.value,
+            pm_id=(pm_occurrence.pm_id if pm_occurrence else None),
+            pm_trigger_type=(pm_occurrence.trigger_type if pm_occurrence else None),
+            pm_occurrence_index=(pm_occurrence.occurrence_index if pm_occurrence else None),
+            pm_duration=(pm_occurrence.duration if pm_occurrence else None),
+            interrupted_activity_kind=kind.value,
+            remaining_duration=remaining,
+            activity_token=machine.activity_token,
+            state_before=f"{kind.value}:ACTIVE",
+            state_after=f"{kind.value}:SUSPENDED",
+        )
+        return interrupted
+
+    def _resume_activity(self, *, event: Event, machine: _MachineRuntime) -> None:
+        interrupted = machine.interrupted_activity
+        if interrupted is None:
+            raise SimulationError("恢复活动时缺少 interrupted activity")
         machine.interrupted_activity = None
         finish_time = self.current_time + interrupted.remaining_duration
         token = self._activate_until(machine, finish_time)
@@ -876,15 +1235,8 @@ class Simulator:
             self._schedule(
                 time=finish_time,
                 event_type=EventType.SETUP_FINISH,
-                entity_id=machine_id,
-                payload={
-                    "machine_id": machine_id,
-                    "lot_id": machine.lot_id,
-                    "operation_index": machine.operation_index,
-                    "from_setup": machine.setup_from,
-                    "to_setup": machine.setup_to,
-                    "activity_token": token,
-                },
+                entity_id=machine.machine_id,
+                payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "from_setup": machine.setup_from, "to_setup": machine.setup_to, "activity_token": token},
             )
         elif interrupted.kind is ActivityKind.PROCESS:
             machine.processing_started_at = self.current_time
@@ -893,28 +1245,17 @@ class Simulator:
             self._schedule(
                 time=finish_time,
                 event_type=EventType.PROCESS_FINISH,
-                entity_id=machine_id,
-                payload={
-                    "machine_id": machine_id,
-                    "lot_id": machine.lot_id,
-                    "operation_index": machine.operation_index,
-                    "activity_token": token,
-                },
+                entity_id=machine.machine_id,
+                payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "activity_token": token},
             )
         else:
             batch_id = machine.active_batch_id
             if batch_id is None:
                 raise SimulationError("恢复 Batch 时缺少 batch identity")
             machine.processing_started_at = self.current_time
-            batch = self._active_batches[batch_id]
-            batch.scheduled_finish_time = finish_time
+            self._active_batches[batch_id].scheduled_finish_time = finish_time
             self._record_resume(event, machine, None, "BATCH_RESUME", interrupted, token)
-            self._schedule(
-                time=finish_time,
-                event_type=EventType.BATCH_FINISH,
-                entity_id=batch_id,
-                payload={"batch_id": batch_id, "activity_token": token},
-            )
+            self._schedule(time=finish_time, event_type=EventType.BATCH_FINISH, entity_id=batch_id, payload={"batch_id": batch_id, "activity_token": token})
 
     def _record_resume(
         self,
@@ -933,8 +1274,13 @@ class Simulator:
             operation=self._machine_operation(machine),
             machine_id=machine.machine_id,
             batch_id=machine.active_batch_id,
-            failure_occurrence_index=event.payload["occurrence_index"],
-            failure_model_type=event.payload["model_type"],
+            failure_occurrence_index=(event.payload["occurrence_index"] if event.event_type is EventType.REPAIR_FINISH else None),
+            failure_model_type=(event.payload["model_type"] if event.event_type is EventType.REPAIR_FINISH else None),
+            downtime_cause=(DowntimeCause.FAILURE.value if event.event_type is EventType.REPAIR_FINISH else event.payload["trigger_type"]),
+            pm_id=(event.payload.get("pm_id") if event.event_type is EventType.PM_FINISH else None),
+            pm_trigger_type=(event.payload.get("trigger_type") if event.event_type is EventType.PM_FINISH else None),
+            pm_occurrence_index=(event.payload["occurrence_index"] if event.event_type is EventType.PM_FINISH else None),
+            pm_duration=(event.payload.get("duration") if event.event_type is EventType.PM_FINISH else None),
             interrupted_activity_kind=interrupted.kind.value,
             remaining_duration=interrupted.remaining_duration,
             activity_token=token,
@@ -1605,6 +1951,13 @@ class Simulator:
             lot=lot,
             completed_operation=operation,
         )
+        self._account_completed_wafers(
+            event=event,
+            machine_id=machine_id,
+            wafers=lot.spec.quantity_wafers,
+            lot=lot,
+            operation=operation,
+        )
         self._ensure_dispatch_barrier()
 
     def _handle_batch_finish(self, event: Event) -> None:
@@ -1727,7 +2080,49 @@ class Simulator:
                 completed_operation=operation,
                 batch_id=batch_id,
             )
+        self._account_completed_wafers(
+            event=event,
+            machine_id=active.machine_id,
+            wafers=active.total_wafers,
+            operation=first_operation,
+            batch_id=batch_id,
+        )
         self._ensure_dispatch_barrier()
+
+    def _account_completed_wafers(
+        self,
+        *,
+        event: Event,
+        machine_id: str,
+        wafers: int,
+        lot: _LotRuntime | None = None,
+        operation: Any | None = None,
+        batch_id: str | None = None,
+    ) -> None:
+        due = self._pm_runtime.account_completed_wafers(machine_id, wafers)
+        if due is None:
+            return
+        self._record(
+            event_type="PM_DUE",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine_id,
+            batch_id=batch_id,
+            downtime_cause=DowntimeCause.WAFER_PM.value,
+            pm_id=due.pm_id,
+            pm_trigger_type=DowntimeCause.WAFER_PM.value,
+            pm_occurrence_index=due.occurrence_index,
+            pm_duration=due.duration,
+            wafer_counter_before=due.counter_before,
+            wafer_counter_after=due.counter_after,
+            wafer_threshold=due.threshold_wafers,
+            processed_wafers=due.processed_wafers,
+            state_before="PM:NOT_DUE",
+            state_after="PM:PENDING",
+        )
+        self._schedule_pending_wafer_pm(machine_id)
 
     def _advance_lot_after_processing(
         self,
@@ -1989,6 +2384,15 @@ class Simulator:
         remaining_duration: float | None = None,
         repair_duration: float | None = None,
         activity_token: int | None = None,
+        downtime_cause: str | None = None,
+        pm_id: str | None = None,
+        pm_trigger_type: str | None = None,
+        pm_occurrence_index: int | None = None,
+        pm_duration: float | None = None,
+        wafer_counter_before: int | None = None,
+        wafer_counter_after: int | None = None,
+        wafer_threshold: int | None = None,
+        processed_wafers: int | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -2039,6 +2443,15 @@ class Simulator:
             remaining_duration=remaining_duration,
             repair_duration=repair_duration,
             activity_token=activity_token,
+            downtime_cause=downtime_cause,
+            pm_id=pm_id,
+            pm_trigger_type=pm_trigger_type,
+            pm_occurrence_index=pm_occurrence_index,
+            pm_duration=pm_duration,
+            wafer_counter_before=wafer_counter_before,
+            wafer_counter_after=wafer_counter_after,
+            wafer_threshold=wafer_threshold,
+            processed_wafers=processed_wafers,
             state_before=state_before,
             state_after=state_after,
             cause_event_seq=cause_event_seq,
@@ -2074,7 +2487,76 @@ class Simulator:
             ),
             terminal_wip_lots=len(released) - len(completed),
             end_time=end_time,
+            cycle_time_coverage=(
+                len(completed) / len(released) if released else 0.0
+            ),
+            remaining_work_minutes=self._remaining_work_minutes(end_time),
+            lateness_exposure_minutes=sum(
+                max(0.0, end_time - lot.spec.due_time)
+                for lot in released
+                if lot.status is not LotStatus.COMPLETED
+                and lot.spec.due_time is not None
+            ),
+            mean_wip=self._mean_wip(end_time),
         )
+
+    def _mean_wip(self, end_time: float) -> float:
+        if end_time <= 0:
+            return 0.0
+        changes = sorted(
+            (
+                record.sim_time,
+                1 if record.event_type == "LOT_RELEASE" else -1,
+                record.event_seq,
+            )
+            for record in self._trace
+            if record.event_type in {"LOT_RELEASE", "LOT_COMPLETE"}
+            and record.sim_time <= end_time
+        )
+        area = 0.0
+        level = 0
+        previous = 0.0
+        for time, delta, _ in changes:
+            area += level * (time - previous)
+            level += delta
+            previous = time
+        area += level * (end_time - previous)
+        return area / end_time
+
+    def _remaining_work_minutes(self, end_time: float) -> float:
+        total = 0.0
+        for lot in self._lots.values():
+            if lot.status in {LotStatus.UNRELEASED, LotStatus.COMPLETED}:
+                continue
+            operations = lot.spec.operations
+            total += sum(
+                operation.processing_time
+                for operation in operations[lot.operation_index:]
+            )
+            if lot.status is not LotStatus.PROCESSING:
+                continue
+            operation = operations[lot.operation_index]
+            machine_id = lot.current_machine_id
+            if machine_id is None:
+                raise SimulationError("PROCESSING lot 缺少 machine")
+            machine = self._machines[machine_id]
+            if machine.active_batch_id is not None:
+                batch = self._active_batches[machine.active_batch_id]
+                executed = batch.accumulated_processing_time
+                if machine.processing_started_at is not None:
+                    executed += end_time - machine.processing_started_at
+            else:
+                executed = sum(
+                    interval.finish - interval.start
+                    for interval in self._processing_intervals
+                    if interval.lot_id == lot.spec.lot_id
+                    and interval.step_id == operation.step_id
+                    and interval.route_id == operation.route_id
+                )
+                if machine.processing_started_at is not None:
+                    executed += end_time - machine.processing_started_at
+            total -= min(operation.processing_time, executed)
+        return total
 
     def _build_machine_statistics(
         self,
@@ -2122,15 +2604,31 @@ class Simulator:
         downtime_by_machine = {
             machine_id: 0.0 for machine_id in self._machines
         }
+        failure_downtime_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
+        pm_downtime_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
         for interval in self._downtime_intervals:
-            downtime_by_machine[interval.machine_id] += (
-                interval.finish - interval.start
-            )
+            duration = interval.finish - interval.start
+            downtime_by_machine[interval.machine_id] += duration
+            failure_downtime_by_machine[interval.machine_id] += duration
+        for interval in self._pm_intervals:
+            duration = interval.finish - interval.start
+            downtime_by_machine[interval.machine_id] += duration
+            pm_downtime_by_machine[interval.machine_id] += duration
         for machine_id, machine in self._machines.items():
             if machine.downtime_started_at is not None:
-                downtime_by_machine[machine_id] += (
-                    end_time - machine.downtime_started_at
-                )
+                duration = end_time - machine.downtime_started_at
+                downtime_by_machine[machine_id] += duration
+                if machine.downtime_cause is DowntimeCause.FAILURE:
+                    failure_downtime_by_machine[machine_id] += duration
+                else:
+                    pm_downtime_by_machine[machine_id] += duration
+        wafer_states = {
+            state.machine_id: state for state in self._pm_runtime.snapshots
+        }
         return {
             machine_id: MachineStatistics(
                 machine_id=machine_id,
@@ -2164,6 +2662,24 @@ class Simulator:
                     if machine.interrupted_activity is not None
                     else None
                 ),
+                failure_downtime=failure_downtime_by_machine[machine_id],
+                pm_downtime=pm_downtime_by_machine[machine_id],
+                pm_count=machine.pm_count,
+                downtime_cause=(
+                    machine.downtime_cause.value
+                    if machine.downtime_cause is not None
+                    else None
+                ),
+                wafer_counter=(
+                    wafer_states[machine_id].counter_wafers
+                    if machine_id in wafer_states
+                    else None
+                ),
+                wafer_pm_pending=(
+                    wafer_states[machine_id].pending
+                    if machine_id in wafer_states
+                    else False
+                ),
             )
             for machine_id, machine in sorted(self._machines.items())
         }
@@ -2194,8 +2710,24 @@ class Simulator:
                 ),
                 lot_id=machine.lot_id,
                 batch_id=machine.active_batch_id,
+                downtime_cause=(
+                    machine.downtime_cause.value
+                    if machine.downtime_cause is not None
+                    else None
+                ),
+                downtime_id=machine.downtime_id,
+                remaining_downtime_time=(
+                    max(0.0, machine.downtime_ends_at - end_time)
+                    if machine.downtime_ends_at is not None
+                    else None
+                ),
+                wafer_pm_pending=(
+                    self._pm_runtime.pending_for_machine(machine_id) is not None
+                ),
             )
             for machine_id, machine in sorted(self._machines.items())
             if machine.availability is MachineAvailability.DOWN
             or machine.failure_count > 0
+            or machine.pm_count > 0
+            or self._pm_runtime.pending_for_machine(machine_id) is not None
         )

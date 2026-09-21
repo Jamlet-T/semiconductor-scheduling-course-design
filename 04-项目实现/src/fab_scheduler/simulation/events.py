@@ -8,17 +8,20 @@ from typing import Any
 
 
 class EventPriority(IntEnum):
-    """Simulation Contract 0.1.2 的同刻事件优先级。"""
+    """Simulation Contract 0.1.3 的同刻事件优先级。"""
 
     PROCESS_FINISH = 10
     REPAIR_FINISH = 20
     FAILURE_START = 30
+    PM_START = 35
     LOT_RELEASE = 40
     MONITOR = 50
     DISPATCH_BARRIER = 60
 
 
 class EventType(str, Enum):
+    PM_FINISH = "PM_FINISH"
+    PM_START = "PM_START"
     REPAIR_FINISH = "REPAIR_FINISH"
     FAILURE_START = "FAILURE_START"
     PROCESS_FINISH = "PROCESS_FINISH"
@@ -30,6 +33,8 @@ class EventType(str, Enum):
 
 
 EVENT_PRIORITIES = {
+    EventType.PM_FINISH: EventPriority.REPAIR_FINISH,
+    EventType.PM_START: EventPriority.PM_START,
     EventType.REPAIR_FINISH: EventPriority.REPAIR_FINISH,
     EventType.FAILURE_START: EventPriority.FAILURE_START,
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
@@ -97,6 +102,15 @@ class TraceRecord:
     remaining_duration: float | None = None
     repair_duration: float | None = None
     activity_token: int | None = None
+    downtime_cause: str | None = None
+    pm_id: str | None = None
+    pm_trigger_type: str | None = None
+    pm_occurrence_index: int | None = None
+    pm_duration: float | None = None
+    wafer_counter_before: int | None = None
+    wafer_counter_after: int | None = None
+    wafer_threshold: int | None = None
+    processed_wafers: int | None = None
     state_before: str | None = None
     state_after: str | None = None
     cause_event_seq: int | None = None

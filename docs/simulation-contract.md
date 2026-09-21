@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.2`
+版本：`0.1.3`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -51,10 +51,11 @@ objective = evaluate(metrics)
 
 1. `PROCESS_FINISH`、`BATCH_FINISH`、`SETUP_FINISH`、`TRANSPORT_ARRIVE`；
 2. `REPAIR_FINISH`、`PM_FINISH`；
-3. `FAILURE_START`、`PM_START`；
-4. `LOT_RELEASE`；
-5. `CQT_DEADLINE`、批等待唤醒等监测事件；
-6. `DISPATCH_BARRIER`。
+3. `FAILURE_START`；
+4. `PM_START`；
+5. `LOT_RELEASE`；
+6. `CQT_DEADLINE`、批等待唤醒等监测事件；
+7. `DISPATCH_BARRIER`。
 
 含义：在 `t` 恰好加工完成的 lot 先完成；同刻开始的故障随后使设备不可用；同刻释放或到达的 lot 会进入本次派工候选；所有设备在同一状态快照上派工。多台设备选择同一 lot 时，中央动作提交器按稳定设备 ID 原子预留，后续冲突动作重新选择或空闲，禁止重复占用。
 
@@ -165,10 +166,16 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | 修复后行为 | FROZEN | 修复后从剩余时间继续，不完整重启、不隐式报废 |
 | 恢复优先权 | FROZEN | 有被中断活动时先恢复原 machine 上的同一 lot/setup/batch，不重新参与派工；无被中断活动时才进入统一派工屏障 |
 | PM 触发 | FROZEN | `mtbpm_by_cal` 按日历触发；FOA 空单位时按累计加工 wafer 触发 |
-| PM 冲突 | FROZEN | 日历 PM 到点时中断并在结束后继续；按 wafer PM 在当前加工完成后、再次派工前执行 |
+| 日历 PM | FROZEN | 到点时中断 setup、普通加工或整个 batch，结束后按剩余时长继续；周期 occurrence 由“上一计划开始时刻 + interval”生成，不因停机重叠而漂移 |
+| wafer PM 计数 | FROZEN | 仅在真实 `PROCESS_FINISH/BATCH_FINISH` 后累计完成 wafer；普通 lot 加 `quantity_wafers`，Batch 只按 `total_wafers` 加一次 |
+| wafer PM 启动 | FROZEN | 达到/越过阈值后置为 pending，在下一次派工前执行；中断、恢复和 stale finish 均不得重复累计 |
+| wafer PM reset | FROZEN | PM 完成后计数归零，超过阈值的余量不结转；这是 Contract 0.1.3 的显式本地规则 |
+| 停机所有权 | FROZEN | 每台 machine 同时最多一个 active downtime owner；Failure、Calendar PM、Wafer PM 的触发、统计和 provenance 分开 |
+| Failure/PM 重叠 | FROZEN | 已 DOWN 时到达的 Failure 或 Calendar PM occurrence 无效；PM 期间被抑制的 stochastic failure 在 PM 完成后从该时刻采样下一间隔；pending wafer PM 保留，并在当前 downtime 结束、恢复派工前执行 |
+| 同刻 Failure/PM | FROZEN | `FAILURE_START` 优先于 `PM_START`；Failure 取得所有权，随后同刻 PM occurrence 记为 stale |
 | 旧完成事件 | FROZEN | 活动被中断后，旧完成事件必须用版本号/取消标记失效，禁止重复完工 |
 
-故障间隔和维修时长使用相互独立的实体索引流 `(seed, stream, machine_id, occurrence_index)`。scripted 与 stochastic 配置只在事件生成方式上不同；一旦生成 `FAILURE_START`，共用同一暂停、维修和恢复路径。微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
+故障间隔和维修时长使用相互独立的实体索引流 `(seed, stream, machine_id, occurrence_index)`；PM interval/duration 使用独立的 `(seed, stream, pm_id, occurrence_index)`。scripted 与 stochastic/periodic 配置只在事件生成方式上不同；事件到达后共用同一暂停、停机所有权和恢复路径。微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
 
 ## 9. 搬运
 
@@ -244,3 +251,7 @@ state_before, state_after, cause_event_seq
 ### 0.1.2 修订说明
 
 MC07 实现前补齐了两项会改变事件行为的语义：Batch 按一次物理加工整体执行 preemptive-resume；随机故障首次从 `t=0`、后续从上次维修完成时刻按 calendar time 安排。其余事件优先级和既有机制未改变。
+
+### 0.1.3 修订说明
+
+MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按真实 wafer 数累计；wafer PM 完成后计数归零且余量不结转；每台设备采用单一 active downtime owner；Failure 与 PM 同刻时 Failure 优先，active downtime 期间的日历型 occurrence 无效，而 wafer PM pending 保留到恢复派工前执行。MC01～MC07 的生产、Setup、Batch、CQT、Dedication 与 Failure 金标准语义未改变。

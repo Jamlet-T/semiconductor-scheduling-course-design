@@ -322,7 +322,7 @@ class MicroCaseSimulationTests(unittest.TestCase):
             git_commit="test-commit",
         ).run()
         provenance = result.provenance.to_dict()
-        self.assertEqual(provenance["simulation_contract_version"], "0.1.2")
+        self.assertEqual(provenance["simulation_contract_version"], "0.1.3")
         self.assertEqual(provenance["dataset_version"], "micro_cases@0.1.0")
         self.assertEqual(provenance["git_commit"], "test-commit")
         self.assertEqual(provenance["seed"], 42)

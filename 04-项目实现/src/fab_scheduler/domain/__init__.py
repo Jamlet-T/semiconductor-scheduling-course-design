@@ -2,6 +2,7 @@
 
 from fab_scheduler.domain.models import (
     BatchSpec,
+    CalendarPMSpec,
     CQTSpec,
     DedicationSpec,
     LotSpec,
@@ -10,12 +11,15 @@ from fab_scheduler.domain.models import (
     OperationSpec,
     Scenario,
     SetupTransition,
+    ScriptedPMSpec,
     ScriptedFailureSpec,
     TimeDistributionSpec,
+    WaferPMSpec,
 )
 
 __all__ = [
     "BatchSpec",
+    "CalendarPMSpec",
     "CQTSpec",
     "DedicationSpec",
     "LotSpec",
@@ -24,6 +28,8 @@ __all__ = [
     "OperationSpec",
     "Scenario",
     "SetupTransition",
+    "ScriptedPMSpec",
     "ScriptedFailureSpec",
     "TimeDistributionSpec",
+    "WaferPMSpec",
 ]

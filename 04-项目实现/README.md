@@ -1,6 +1,6 @@
 # fab-scheduler
 
-这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周，目前处于 `M1 — Simulation Reliability Baseline`：轻量 DES 已验证 MC01～MC07，包含 FIFO、Setup、wafer 容量 Batch、CQT、物理机 Dedication、preemptive-resume Failure、逐事件 trace 与 provenance；MC08 和正式数据实验尚未实现，CMA-ES 在 M1 通过前禁用。
+这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周，目前处于 `M1 — Simulation Reliability Baseline`：轻量 DES 已验证 MC01～MC08，包含 FIFO、Setup、wafer 容量 Batch、CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、逐事件 trace 与 provenance。M1 仅为 `awaiting_closure_audit`，正式数据实验尚未开始，CMA-ES 继续禁用。
 
 通过仓库根目录的命令安装：
 

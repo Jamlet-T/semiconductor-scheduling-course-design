@@ -38,10 +38,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("项目阶段：M1 Simulation Reliability Baseline", result.stdout)
         self.assertIn("项目周期：14 周", result.stdout)
         self.assertIn(
-            "仿真状态：基础 DES 已验证 MC01/MC02；高级机制未实现",
+            "仿真状态：可信轻量 DES 已验证 MC01-MC08；M1 等待闭环审计",
             result.stdout,
         )
-        self.assertIn("优化器状态：CMA-ES 已选型，M1 通过前禁用", result.stdout)
+        self.assertIn(
+            "优化器状态：CMA-ES 已选型，M1 正式通过前禁用",
+            result.stdout,
+        )
         self.assertNotIn("吞吐量", result.stdout)
 
 

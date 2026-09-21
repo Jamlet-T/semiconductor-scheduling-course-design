@@ -21,13 +21,18 @@ class ContractConfigurationTests(unittest.TestCase):
     def test_m1_gate_keeps_optimizer_disabled(self) -> None:
         route = self.project["technical_route"]
         self.assertEqual(self.project["phase"], "m1_simulation_reliability_baseline")
+        self.assertTrue(self.project["simulation_implemented"])
         self.assertEqual(route["status"], "frozen")
         self.assertEqual(route["current_milestone"], "M1")
         self.assertEqual(route["optimizer"], "CMA-ES")
         self.assertFalse(route["optimizer_enabled"])
 
     def test_micro_cases_follow_the_frozen_contract_version(self) -> None:
-        self.assertEqual(self.micro_cases["status"], "mc01_mc07_verified")
+        self.assertEqual(
+            self.micro_cases["status"],
+            "mc01_mc08_verified_awaiting_closure_audit",
+        )
+        self.assertEqual(self.project["m1_status"], "awaiting_closure_audit")
         self.assertEqual(
             self.micro_cases["contract_version"],
             self.project["technical_route"]["contract_version"],
@@ -53,7 +58,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(len(case_ids), len(set(case_ids)))
         self.assertEqual(set(case_ids), expected_ids)
 
-    def test_only_mc01_through_mc07_are_verified(self) -> None:
+    def test_mc01_through_mc08_are_verified_but_m1_awaits_closure(self) -> None:
         statuses = {
             case["id"]: case["implementation_status"]
             for case in self.micro_cases["cases"]
@@ -65,19 +70,8 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(statuses["MC05_CROSS_STEP_CQT"], "verified")
         self.assertEqual(statuses["MC06_MACHINE_DEDICATION"], "verified")
         self.assertEqual(statuses["MC07_FAILURE_AND_EVENT_BARRIER"], "verified")
-        for case_id in sorted(
-            set(statuses)
-            - {
-                "MC01_ROUTE_ORDER",
-                "MC02_DYNAMIC_RELEASE_FIFO",
-                "MC03_SEQUENCE_SETUP",
-                "MC04_BATCH_CAPACITY",
-                "MC05_CROSS_STEP_CQT",
-                "MC06_MACHINE_DEDICATION",
-                "MC07_FAILURE_AND_EVENT_BARRIER",
-            }
-        ):
-            self.assertEqual(statuses[case_id], "locked")
+        self.assertEqual(statuses["MC08_TERMINAL_EXPOSURE"], "verified")
+        self.assertFalse(self.project["technical_route"]["optimizer_enabled"])
 
 
 if __name__ == "__main__":
