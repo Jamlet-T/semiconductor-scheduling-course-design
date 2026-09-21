@@ -332,6 +332,10 @@ class M1ClosureMetricAndBoundaryTests(unittest.TestCase):
         )
         result = Simulator(scenario, seed=42, git_commit="audit").run()
         self.assertEqual(result.provenance.simulation_contract_version, "0.1.3")
+        self.assertEqual(
+            result.provenance.dispatch_policy_contract_version,
+            "0.1.0",
+        )
 
     def test_provenance_contains_behavior_affecting_scenario_fields(self) -> None:
         batch = BatchSpec(125, 150, 125, 5)

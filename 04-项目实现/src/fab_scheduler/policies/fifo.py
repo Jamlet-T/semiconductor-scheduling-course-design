@@ -14,6 +14,7 @@ class FIFOPolicy:
     """按当前工序入队时间排序，使用稳定实体 ID 打破平局。"""
 
     name = "FIFO"
+    policy_id = "fifo"
 
     def select(
         self,
@@ -30,5 +31,6 @@ class FIFOPolicy:
                 action.lot_id,
                 action.machine_id,
                 action.operation_index,
+                action.action_id,
             ),
         )

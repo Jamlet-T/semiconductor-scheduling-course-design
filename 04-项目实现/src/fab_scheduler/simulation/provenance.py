@@ -32,11 +32,14 @@ def discover_git_commit() -> str:
 @dataclass(frozen=True, slots=True)
 class RunProvenance:
     simulation_contract_version: str
+    dispatch_policy_contract_version: str
     dataset_version: str
     git_commit: str
     seed: int
     simulation_config: dict[str, Any]
     dispatch_policy: str
+    dispatch_policy_id: str
+    policy_parameters: dict[str, Any]
     termination_condition: str
     horizon: float | None
 

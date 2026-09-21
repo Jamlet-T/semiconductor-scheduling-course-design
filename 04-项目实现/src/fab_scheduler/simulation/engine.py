@@ -11,9 +11,11 @@ from enum import Enum
 import heapq
 from statistics import fmean
 from typing import Any
+from collections.abc import Mapping
 
 from fab_scheduler.domain.models import LotSpec, Scenario
 from fab_scheduler.policies.base import (
+    DISPATCH_POLICY_CONTRACT_VERSION,
     DispatchAction,
     DispatchPolicy,
     DispatchState,
@@ -51,7 +53,11 @@ from fab_scheduler.simulation.provenance import (
     RunProvenance,
     discover_git_commit,
 )
-from fab_scheduler.simulation.random_streams import EntityRandomStreams
+from fab_scheduler.simulation.random_streams import (
+    RANDOM_SAMPLE_LEDGER_VERSION,
+    EntityRandomStreams,
+    RandomSampleRecord,
+)
 from fab_scheduler.simulation.setup import SetupDurationResolver
 from fab_scheduler.simulation.pm import (
     PM_RUNTIME_SCHEMA_VERSION,
@@ -328,6 +334,35 @@ class SimulationResult:
     wafer_pm_states: tuple[WaferPMStateSnapshot, ...]
     pm_count: int
     total_pm_downtime: float
+    random_sample_ledger: tuple[RandomSampleRecord, ...]
+
+    @property
+    def policy_id(self) -> str:
+        return self.provenance.dispatch_policy_id
+
+    @property
+    def policy_parameters(self) -> dict[str, Any]:
+        return dict(self.provenance.policy_parameters)
+
+    @property
+    def seed(self) -> int:
+        return self.provenance.seed
+
+    @property
+    def contract_version(self) -> str:
+        return self.provenance.simulation_contract_version
+
+    @property
+    def policy_contract_version(self) -> str:
+        return self.provenance.dispatch_policy_contract_version
+
+    @property
+    def scenario_identity(self) -> str:
+        return str(self.provenance.simulation_config["scenario_id"])
+
+    @property
+    def termination(self) -> str:
+        return self.provenance.termination_condition
 
     def trace_as_dicts(self) -> list[dict[str, Any]]:
         return [record.to_dict() for record in self.trace]
@@ -460,11 +495,13 @@ class Simulator:
         scenario: Scenario,
         *,
         policy: DispatchPolicy | None = None,
+        policy_parameters: Mapping[str, Any] | None = None,
         seed: int = 0,
         git_commit: str | None = None,
     ) -> None:
         self.scenario = scenario
         self.policy = policy or FIFOPolicy()
+        self.policy_parameters = dict(policy_parameters or {})
         self.seed = seed
         self.random_streams = EntityRandomStreams(seed)
         self.current_time = 0.0
@@ -558,12 +595,16 @@ class Simulator:
         dedication_metrics = self._dedication_runtime.metrics
         provenance = RunProvenance(
             simulation_contract_version=SIMULATION_CONTRACT_VERSION,
+            dispatch_policy_contract_version=(
+                DISPATCH_POLICY_CONTRACT_VERSION
+            ),
             dataset_version=self.scenario.dataset_version,
             git_commit=self._git_commit,
             seed=self.seed,
             simulation_config={
                 **asdict(self.scenario),
                 "random_stream_scheme": "sha256(seed,stream,entity,occurrence)",
+                "random_sample_ledger_version": RANDOM_SAMPLE_LEDGER_VERSION,
                 "cqt_runtime_schema_version": CQT_RUNTIME_SCHEMA_VERSION,
                 "dedication_runtime_schema_version": (
                     DEDICATION_RUNTIME_SCHEMA_VERSION
@@ -582,6 +623,12 @@ class Simulator:
                 },
             },
             dispatch_policy=self.policy.name,
+            dispatch_policy_id=getattr(
+                self.policy,
+                "policy_id",
+                self.policy.name.lower(),
+            ),
+            policy_parameters=dict(self.policy_parameters),
             termination_condition=self.scenario.termination_mode,
             horizon=self.scenario.horizon,
         )
@@ -647,6 +694,7 @@ class Simulator:
             wafer_pm_states=self._pm_runtime.snapshots,
             pm_count=sum(machine.pm_count for machine in self._machines.values()),
             total_pm_downtime=sum(item.pm_downtime for item in machine_statistics.values()),
+            random_sample_ledger=self.random_streams.ledger,
         )
 
     def query_cqt_state(
@@ -1340,7 +1388,7 @@ class Simulator:
                 continue
             if action not in actions:
                 raise SimulationError("策略返回了不可行动作")
-            batch_decision = batch_decisions.get(action.lot_id)
+            batch_decision = batch_decisions.get(action.action_id)
             if batch_decision is not None:
                 self._start_batch(event, machine_id, batch_decision)
             else:
@@ -1368,23 +1416,88 @@ class Simulator:
             if lot.queue_entered_at is None:
                 raise SimulationError(f"排队 lot 缺少入队时间：{lot_id}")
             actions.append(
-                DispatchAction(
-                    lot_id=lot_id,
+                self._build_dispatch_action(
                     machine_id=machine_id,
-                    operation_index=lot.operation_index,
-                    step_id=operation.step_id,
-                    queue_entered_at=lot.queue_entered_at,
-                    release_time=lot.spec.release_time,
+                    member_lot_ids=(lot_id,),
+                    action_type="ordinary",
                 )
             )
         return actions
+
+    def _build_dispatch_action(
+        self,
+        *,
+        machine_id: str,
+        member_lot_ids: tuple[str, ...],
+        action_type: str,
+    ) -> DispatchAction:
+        """只从 engine runtime 构造 policy 可见快照，不改变任何状态。"""
+
+        if not member_lot_ids:
+            raise SimulationError("DispatchAction member 不能为空")
+        members = tuple(self._lots[lot_id] for lot_id in member_lot_ids)
+        representative = members[0]
+        operation = representative.spec.operations[
+            representative.operation_index
+        ]
+        for member in members:
+            member_operation = member.spec.operations[member.operation_index]
+            if (
+                member_operation.route_id,
+                member_operation.step_id,
+                member_operation.processing_time,
+            ) != (
+                operation.route_id,
+                operation.step_id,
+                operation.processing_time,
+            ):
+                raise SimulationError("同一 DispatchAction 的 route/step/time 不一致")
+            if member.queue_entered_at is None:
+                raise SimulationError(
+                    f"DispatchAction member 缺少 queue time：{member.spec.lot_id}"
+                )
+
+        if action_type not in {"ordinary", "batch"}:
+            raise SimulationError(f"未知 DispatchAction 类型：{action_type}")
+        action_kind = action_type
+        member_token = ",".join(member_lot_ids)
+        action_id = (
+            f"{action_kind.upper()}|{machine_id}|{operation.route_id}|"
+            f"{operation.step_id}|{member_token}"
+        )
+        return DispatchAction(
+            action_id=action_id,
+            lot_id=representative.spec.lot_id,
+            machine_id=machine_id,
+            action_type=action_kind,
+            member_lot_ids=member_lot_ids,
+            operation_index=representative.operation_index,
+            route_id=operation.route_id,
+            step_id=operation.step_id,
+            queue_entered_at=min(
+                member.queue_entered_at
+                for member in members
+                if member.queue_entered_at is not None
+            ),
+            release_time=min(member.spec.release_time for member in members),
+            physical_processing_time=operation.processing_time,
+            member_due_times=tuple(member.spec.due_time for member in members),
+            member_remaining_nominal_processing_times=tuple(
+                sum(
+                    item.processing_time
+                    for item in member.spec.operations[
+                        member.operation_index :
+                    ]
+                )
+                for member in members
+            ),
+        )
 
     def _dispatch_options(
         self,
         machine_id: str,
     ) -> tuple[list[DispatchAction], dict[str, BatchDecision]]:
         eligible = self._eligible_actions(machine_id)
-        action_by_lot = {action.lot_id: action for action in eligible}
         ordinary: list[DispatchAction] = []
         groups: dict[tuple[str, int], list[BatchCandidate]] = {}
         for action in eligible:
@@ -1418,9 +1531,16 @@ class Simulator:
             )
             timeout_key = (machine_id, key[0], key[1])
             if decision.can_start:
-                representative = decision.selected_members[0]
-                options.append(action_by_lot[representative.lot_id])
-                decisions[representative.lot_id] = decision
+                member_ids = tuple(
+                    member.lot_id for member in decision.selected_members
+                )
+                batch_action = self._build_dispatch_action(
+                    machine_id=machine_id,
+                    member_lot_ids=member_ids,
+                    action_type="batch",
+                )
+                options.append(batch_action)
+                decisions[batch_action.action_id] = decision
             elif decision.timeout_at is not None:
                 self._ensure_batch_timeout(
                     timeout_key=timeout_key,

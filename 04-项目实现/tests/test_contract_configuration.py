@@ -30,12 +30,12 @@ class ContractConfigurationTests(unittest.TestCase):
     def test_micro_cases_follow_the_frozen_contract_version(self) -> None:
         self.assertEqual(
             self.micro_cases["status"],
-            "mc01_mc08_verified_m1_gaps",
+            "mc01_mc08_verified_m1_passed",
         )
-        self.assertEqual(self.project["m1_status"], "not_passed_gaps")
+        self.assertEqual(self.project["m1_status"], "passed")
         self.assertEqual(
             self.project["m1_closure_audit"]["failed_exit_criteria"],
-            ["M1-E06", "M1-E07", "M1-E10"],
+            [],
         )
         self.assertEqual(
             self.project["smt2020_data_integration_gate"]["status"],
@@ -66,7 +66,7 @@ class ContractConfigurationTests(unittest.TestCase):
         self.assertEqual(len(case_ids), len(set(case_ids)))
         self.assertEqual(set(case_ids), expected_ids)
 
-    def test_mc01_through_mc08_are_verified_but_m1_has_gaps(self) -> None:
+    def test_mc01_through_mc08_and_m1_are_verified(self) -> None:
         statuses = {
             case["id"]: case["implementation_status"]
             for case in self.micro_cases["cases"]

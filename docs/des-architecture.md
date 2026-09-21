@@ -200,4 +200,4 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | Failure | VERIFIED | MC07 显式事件、抢占继续、stale completion 与终态快照 |
 | PM | VERIFIED | MC08 Calendar/Wafer PM、抢占恢复、计数、重叠、同刻优先级与 fixed horizon |
 
-MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT 与 Dedication 记录。M1 Closure Audit 已完成，但原始门槛 M1-E06、M1-E07、M1-E10 仍有 GAP，因此 M1 为 `not_passed_gaps`，优化器继续禁用。完整结论见 `m1-closure-audit.md`。
+MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT 与 Dedication 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。M1 状态为 `passed`，SMT2020 Data Integration Gate 仍 pending，优化器继续禁用。完整结论见 `m1-closure-audit.md`。

@@ -4,6 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import random
+from dataclasses import dataclass
+
+
+RANDOM_SAMPLE_LEDGER_VERSION = "0.1.0"
+
+
+@dataclass(frozen=True, slots=True)
+class RandomSampleRecord:
+    """一次真正请求的外生随机样本及其稳定 identity。"""
+
+    stream_name: str
+    entity_id: str
+    occurrence_index: int
+    distribution: str
+    parameters: tuple[float, ...]
+    value: float
+    derived_seed: int
+
+    @property
+    def identity(self) -> tuple[str, str, int]:
+        return (self.stream_name, self.entity_id, self.occurrence_index)
 
 
 class EntityRandomStreams:
@@ -11,6 +32,7 @@ class EntityRandomStreams:
 
     def __init__(self, seed: int) -> None:
         self.seed = seed
+        self._ledger: dict[tuple[str, str, int], RandomSampleRecord] = {}
 
     def derived_seed(
         self,
@@ -36,7 +58,29 @@ class EntityRandomStreams:
     ) -> float:
         if high < low:
             raise ValueError("uniform 上界不能小于下界")
-        generator = random.Random(
-            self.derived_seed(stream, entity_key, occurrence)
+        identity = (stream, entity_key, occurrence)
+        existing = self._ledger.get(identity)
+        if existing is not None:
+            if existing.distribution != "uniform" or existing.parameters != (
+                low,
+                high,
+            ):
+                raise ValueError("相同随机 identity 使用了不同分布参数")
+            return existing.value
+        derived_seed = self.derived_seed(stream, entity_key, occurrence)
+        generator = random.Random(derived_seed)
+        value = generator.uniform(low, high)
+        self._ledger[identity] = RandomSampleRecord(
+            stream_name=stream,
+            entity_id=entity_key,
+            occurrence_index=occurrence,
+            distribution="uniform",
+            parameters=(low, high),
+            value=value,
+            derived_seed=derived_seed,
         )
-        return generator.uniform(low, high)
+        return value
+
+    @property
+    def ledger(self) -> tuple[RandomSampleRecord, ...]:
+        return tuple(self._ledger[key] for key in sorted(self._ledger))

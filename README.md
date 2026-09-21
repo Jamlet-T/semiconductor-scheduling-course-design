@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-**已实现：** Python 3.11+ 的可信轻量 DES、FIFO、显式 Setup、wafer 容量 Batch、跨步 CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、实体索引随机流、provenance、事件 trace 与独立审计检查器。MC01～MC08 已逐事件验证。
+**已实现：** Python 3.11+ 的可信轻量 DES、FIFO/SPT/EDD/CR 统一派工接口、显式 Setup、wafer 容量 Batch、跨步 CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、实体索引随机流、RandomSampleLedger、`simulate(theta, scenario, seed)`、provenance、事件 trace 与独立审计检查器。MC01～MC08 已逐事件验证。
 
-**审计结论：** M1 Closure Audit 已完成，原始门槛 M1-E06、M1-E07、M1-E10 仍有 GAP，因此 `M1 = not_passed_gaps`。下一 Gate 是补齐原 M1 接口/多策略证据并完成 SMT2020 Data Integration；在此之前不运行 HVLM/LVHM，也不启用 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
+**审计结论：** E06/E07/E10 补齐后已重新执行 M1 Closure Audit，原始 E01～E10 全部 PASS，因此 `M1 = passed`。下一阶段唯一 Gate 是 SMT2020 Data Integration；在此之前不运行 HVLM/LVHM，也不启用 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
 
 ## 数据与教学材料
 

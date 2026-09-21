@@ -6,10 +6,16 @@ from fab_scheduler.evaluation.audit import (
     audit_result_invariants,
     recompute_trace_metrics,
 )
+from fab_scheduler.evaluation.crn_audit import (
+    CRNAuditResult,
+    audit_common_random_numbers,
+)
 
 __all__ = [
     "ResultInvariantAudit",
     "TraceMetricRecalculation",
     "audit_result_invariants",
     "recompute_trace_metrics",
+    "CRNAuditResult",
+    "audit_common_random_numbers",
 ]

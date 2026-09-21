@@ -1,6 +1,6 @@
 # M1 金标准微型算例
 
-`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC08 已由轻量 DES 逐事件验证；闭环审计确认原 M1 门槛仍有 GAP，因此 M1 为 `not_passed_gaps`。
+`cases.json` 是 `docs/m1-simulation-reliability-baseline.md` 的机器可读版本。MC01～MC08 已由轻量 DES 逐事件验证；E06/E07/E10 补齐并重新审计后，原 M1 十项门槛全部 PASS。SMT2020 Data Integration Gate 仍为 pending。
 
 约定：
 
