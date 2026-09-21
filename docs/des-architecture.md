@@ -1,9 +1,9 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.1`
-当前能力：Basic DES + 显式 Setup + 显式 Batch + 跨步 CQT + 物理机 Dedication，已验证 MC01～MC06
+适用版本：Simulation Contract `0.1.2`
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure，已验证 MC01～MC07
 
-锁定能力：Failure/PM、正式 SMT2020 loader
+锁定能力：PM、正式 SMT2020 loader
 
 ## 1. 模块边界
 
@@ -123,7 +123,7 @@ lot 完成一道工序时：
 - `until_all_complete`：所有场景 lot 完成；事件日历提前耗尽时抛出 `SimulationError`，不返回伪完成结果。
 - `fixed_horizon`：处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP。
 
-MC01～MC06 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断正在进行的 setup、batch、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
+MC01～MC07 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断 setup、batch、故障维修、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
 
 ## 5. Trace 与结果
 
@@ -173,8 +173,8 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | 动态 release | VERIFIED | MC02 |
 | FIFO queue | VERIFIED | MC02 |
 | route progression | VERIFIED | MC01 |
-| machine 占用区间 | VERIFIED | MC01～MC06 |
-| all-complete termination | VERIFIED | MC01～MC06 |
+| machine 占用区间 | VERIFIED | MC01～MC07 |
+| all-complete termination | VERIFIED | MC01～MC07 |
 | fixed horizon | VERIFIED | 普通加工、Setup、Batch terminal WIP 测试 |
 | 实体索引随机流 | VERIFIED | 调用顺序独立性测试 |
 | provenance | VERIFIED | 必填字段测试 |
@@ -191,6 +191,7 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | Dedication 原子绑定、具体机硬过滤与生命周期 | VERIFIED | MC06 金标准与 runtime 单元测试 |
 | Dedication 初始 WIP、qualification 冲突与 terminal binding | VERIFIED | 审计、异常与 fixed-horizon 测试 |
 | Dedication 与 Setup/CQT/Batch 组合边界 | VERIFIED | 组合边界测试 |
-| Failure/PM | LOCKED | 不得进入运行路径 |
+| Failure | VERIFIED | MC07 显式事件、抢占继续、stale completion 与终态快照 |
+| PM | LOCKED | MC08 之前不得进入运行路径 |
 
 MC07 之后的机制必须继续沿用现有 Event、TraceRecord、DispatchPolicy 和 SimulationResult 边界，不能为兼容外部仿真器绕开契约。

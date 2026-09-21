@@ -1,9 +1,9 @@
 {
   "schema_version": "0.1.0",
-  "contract_version": "0.1.1",
-  "event_priority_contract_version": "0.1.1",
+  "contract_version": "0.1.2",
+  "event_priority_contract_version": "0.1.2",
   "time_unit": "minute",
-  "status": "mc01_mc06_verified",
+  "status": "mc01_mc07_verified",
   "cases": [
     {
       "id": "MC01_ROUTE_ORDER",
@@ -920,11 +920,18 @@
     },
     {
       "id": "MC07_FAILURE_AND_EVENT_BARRIER",
-      "implementation_status": "locked",
+      "implementation_status": "verified",
       "purpose": "抢占继续、旧事件失效与同刻优先级",
-      "failure_mode": "preemptive_resume_for_test",
-      "lot": {"id": "L1", "machine": "M1", "start": 0, "process": 10},
-      "failure": {"machine": "M1", "start": 5, "repair_duration": 3},
+      "failure_mode": "scripted_preemptive_resume",
+      "termination": {"mode": "fixed_horizon", "horizon": 13},
+      "lots": [
+        {"id": "L1", "machine": "M1", "release": 0, "process": 10},
+        {"id": "L2", "machine": "M1", "release": 13, "process": 2}
+      ],
+      "scripted_failures": [
+        {"machine": "M1", "start": 5, "repair_duration": 3},
+        {"machine": "M1", "start": 13, "repair_duration": 3}
+      ],
       "simultaneous_at_13": [
         "PROCESS_FINISH:L1",
         "FAILURE_START:M1",
@@ -936,7 +943,20 @@
         "L2_released_at": 13,
         "L2_dispatched_at_13": false,
         "M1_state_after_barrier": "DOWN"
-      }
+      },
+      "expected_trace": [
+        {"time": 0, "event": "LOT_RELEASE", "lot": "L1", "step": 1},
+        {"time": 0, "event": "DISPATCH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 0, "event": "PROCESS_START", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 5, "event": "PROCESS_SUSPEND", "lot": "L1", "machine": "M1", "step": 1, "failure_occurrence": 0, "failure_model": "scripted", "interrupted_activity": "PROCESS", "remaining_duration": 5, "activity_token": 2},
+        {"time": 5, "event": "FAILURE_START", "machine": "M1", "failure_occurrence": 0, "failure_model": "scripted", "interrupted_activity": "PROCESS", "remaining_duration": 5, "repair_duration": 3, "activity_token": 2},
+        {"time": 8, "event": "REPAIR_COMPLETE", "machine": "M1", "failure_occurrence": 0, "failure_model": "scripted", "interrupted_activity": "PROCESS", "remaining_duration": 5, "repair_duration": 3},
+        {"time": 8, "event": "PROCESS_RESUME", "lot": "L1", "machine": "M1", "step": 1, "failure_occurrence": 0, "failure_model": "scripted", "interrupted_activity": "PROCESS", "remaining_duration": 5, "activity_token": 3},
+        {"time": 13, "event": "PROCESS_FINISH", "lot": "L1", "machine": "M1", "step": 1},
+        {"time": 13, "event": "LOT_COMPLETE", "lot": "L1", "step": 1},
+        {"time": 13, "event": "FAILURE_START", "machine": "M1", "failure_occurrence": 1, "failure_model": "scripted", "repair_duration": 3, "activity_token": 3},
+        {"time": 13, "event": "LOT_RELEASE", "lot": "L2", "step": 1}
+      ]
     },
     {
       "id": "MC08_TERMINAL_EXPOSURE",

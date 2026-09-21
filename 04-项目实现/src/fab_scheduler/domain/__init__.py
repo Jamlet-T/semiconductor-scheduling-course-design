@@ -5,10 +5,13 @@ from fab_scheduler.domain.models import (
     CQTSpec,
     DedicationSpec,
     LotSpec,
+    MachineFailureSpec,
     MachineSpec,
     OperationSpec,
     Scenario,
     SetupTransition,
+    ScriptedFailureSpec,
+    TimeDistributionSpec,
 )
 
 __all__ = [
@@ -16,8 +19,11 @@ __all__ = [
     "CQTSpec",
     "DedicationSpec",
     "LotSpec",
+    "MachineFailureSpec",
     "MachineSpec",
     "OperationSpec",
     "Scenario",
     "SetupTransition",
+    "ScriptedFailureSpec",
+    "TimeDistributionSpec",
 ]

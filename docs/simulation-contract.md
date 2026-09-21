@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.1`
+版本：`0.1.2`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -76,9 +76,11 @@ objective = evaluate(metrics)
 Lot: UNRELEASED → TRANSPORTING/QUEUED → RESERVED → SETUP/PROCESSING
      → TRANSPORTING/QUEUED → ... → COMPLETED
 
-Machine: IDLE ↔ SETTING_UP ↔ PROCESSING
-         IDLE/SETTING_UP/PROCESSING → DOWN/PM → IDLE/恢复中的活动
+Machine activity: IDLE ↔ SETTING_UP ↔ PROCESSING
+Machine availability: UP ↔ DOWN
 ```
+
+activity 与 availability 正交保存；故障期间保留被中断活动及剩余时长，不通过组合枚举 `DOWN_DURING_*` 状态表达。
 
 ## 4. Batch
 
@@ -158,13 +160,15 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | 项目 | 状态 | 契约 |
 | --- | --- | --- |
 | 故障到达 | FROZEN | `mttf_by_cal` 按日历时间触发；attach 的 FOA 可定义首次发生 |
-| 抢占 | FROZEN | 故障立即中断 setup/加工 |
+| 故障时钟 | FROZEN | 首次随机故障间隔从仿真 `t=0` 计；维修完成后才抽取并从维修完成时刻累计下一次 calendar-time 间隔；DOWN 状态的嵌套故障无效 |
+| 抢占 | FROZEN | 故障立即中断 setup、普通加工和整批物理加工；Batch identity 与成员保持不变 |
 | 修复后行为 | FROZEN | 修复后从剩余时间继续，不完整重启、不隐式报废 |
+| 恢复优先权 | FROZEN | 有被中断活动时先恢复原 machine 上的同一 lot/setup/batch，不重新参与派工；无被中断活动时才进入统一派工屏障 |
 | PM 触发 | FROZEN | `mtbpm_by_cal` 按日历触发；FOA 空单位时按累计加工 wafer 触发 |
 | PM 冲突 | FROZEN | 日历 PM 到点时中断并在结束后继续；按 wafer PM 在当前加工完成后、再次派工前执行 |
 | 旧完成事件 | FROZEN | 活动被中断后，旧完成事件必须用版本号/取消标记失效，禁止重复完工 |
 
-微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
+故障间隔和维修时长使用相互独立的实体索引流 `(seed, stream, machine_id, occurrence_index)`。scripted 与 stochastic 配置只在事件生成方式上不同；一旦生成 `FAILURE_START`，共用同一暂停、维修和恢复路径。微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
 
 ## 9. 搬运
 
@@ -236,3 +240,7 @@ state_before, state_after, cause_event_seq
 2. `PROVISIONAL/OPEN` 项解决后，补充来源、验证方法和受影响测试。
 3. 任何修改先更新契约和微型算例，再改仿真器。
 4. 语义修改后，旧 run 不得与新契约 run 混合比较。
+
+### 0.1.2 修订说明
+
+MC07 实现前补齐了两项会改变事件行为的语义：Batch 按一次物理加工整体执行 preemptive-resume；随机故障首次从 `t=0`、后续从上次维修完成时刻按 calendar time 安排。其余事件优先级和既有机制未改变。

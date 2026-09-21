@@ -8,7 +8,7 @@ from typing import Any
 
 
 class EventPriority(IntEnum):
-    """Simulation Contract 0.1.1 的同刻事件优先级。"""
+    """Simulation Contract 0.1.2 的同刻事件优先级。"""
 
     PROCESS_FINISH = 10
     REPAIR_FINISH = 20
@@ -19,6 +19,8 @@ class EventPriority(IntEnum):
 
 
 class EventType(str, Enum):
+    REPAIR_FINISH = "REPAIR_FINISH"
+    FAILURE_START = "FAILURE_START"
     PROCESS_FINISH = "PROCESS_FINISH"
     BATCH_FINISH = "BATCH_FINISH"
     SETUP_FINISH = "SETUP_FINISH"
@@ -28,6 +30,8 @@ class EventType(str, Enum):
 
 
 EVENT_PRIORITIES = {
+    EventType.REPAIR_FINISH: EventPriority.REPAIR_FINISH,
+    EventType.FAILURE_START: EventPriority.FAILURE_START,
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
     EventType.BATCH_FINISH: EventPriority.PROCESS_FINISH,
     EventType.SETUP_FINISH: EventPriority.PROCESS_FINISH,
@@ -87,6 +91,12 @@ class TraceRecord:
     dedication_established_at: float | None = None
     dedication_released_at: float | None = None
     dedication_audit_reason: str | None = None
+    failure_occurrence_index: int | None = None
+    failure_model_type: str | None = None
+    interrupted_activity_kind: str | None = None
+    remaining_duration: float | None = None
+    repair_duration: float | None = None
+    activity_token: int | None = None
     state_before: str | None = None
     state_after: str | None = None
     cause_event_seq: int | None = None

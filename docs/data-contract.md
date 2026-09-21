@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.1`
+版本：`0.1.2`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 Basic DES 的 MC01、MC02、Setup 的 MC03、Batch 的 MC04、CQT 的 MC05 与 Dedication 的 MC06 已进入实现并验证；Failure/PM 仍不得用于正式实验。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC07 已进入实现并验证；PM 仍不得用于正式实验。
 
 ## 1. 证据层级与统一约定
 
@@ -220,13 +220,14 @@ route.STIME
 
 本地模型冻结为：
 
-- 故障在发生时立即中断当前 setup/process，修复后从剩余时间继续；
+- 故障在发生时立即中断当前 setup/process/batch，修复后从剩余时间继续；
+- `mttf_by_cal` 首次从 `t=0` 计，后续从上次维修完成时刻重新累计，DOWN 时不接受嵌套有效故障；
 - 日历 PM 到点时采用同样的 preemptive-resume；
 - 按 wafer 触发的 PM 在造成计数越界的加工完成后、机台再次派工前执行；
 - 所有被中断活动的旧完成事件必须失效；
 - failure、repair、pm_duration 使用独立实体索引随机流。
 
-这些选择与 PySCFabSim 延后在制完成事件的参考行为相容，但仍需 MC07 和独立 PM case 验证。当前状态为 `FROZEN-SPEC / NOT-IMPLEMENTED`。
+这些选择与 PySCFabSim 延后在制完成事件的参考行为相容。Failure 已由 MC07 验证；PM 仍需独立 MC08 之前的约定算例验证。当前状态为 `FAILURE VERIFIED-MC07 / PM NOT-IMPLEMENTED`。
 
 ## 12. Transport
 
@@ -253,7 +254,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.1",
+  "simulation_contract_version": "0.1.2",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,

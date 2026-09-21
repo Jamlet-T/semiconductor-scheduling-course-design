@@ -106,6 +106,8 @@ CQT: O1 finish → O3 start, limit=8
 
 ### MC07：故障、恢复与同刻屏障
 
+实现状态：`VERIFIED`（普通加工、Setup、Batch 抢占继续、旧事件失效、空闲故障、随机流、同刻优先级与 fixed-horizon 终态已通过）。
+
 场景显式指定 `preemptive-resume`：
 
 ```text

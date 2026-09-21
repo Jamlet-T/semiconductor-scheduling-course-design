@@ -3,12 +3,84 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Literal
 
 
 TerminationMode = Literal["until_all_complete", "fixed_horizon"]
 BatchCompatibilityRule = Literal["crit_sameroutestep"]
 BatchMemberSelectionRule = Literal["fifo_queue_time_lot_id"]
+FailureModelType = Literal["scripted", "stochastic"]
+TimeDistributionKind = Literal["constant", "uniform"]
+
+
+@dataclass(frozen=True, slots=True)
+class TimeDistributionSpec:
+    """分钟制时长分布；uniform 的第二参数为全宽。"""
+
+    kind: TimeDistributionKind
+    mean_minutes: float
+    width_minutes: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.mean_minutes) or self.mean_minutes <= 0:
+            raise ValueError("distribution mean_minutes 必须为有限正数")
+        if not isfinite(self.width_minutes) or self.width_minutes < 0:
+            raise ValueError("distribution width_minutes 必须为有限非负数")
+        if self.kind == "constant" and self.width_minutes != 0:
+            raise ValueError("constant distribution 的 width_minutes 必须为 0")
+        if self.kind == "uniform":
+            if self.mean_minutes - self.width_minutes / 2 <= 0:
+                raise ValueError("uniform distribution 下界必须为正")
+        elif self.kind != "constant":
+            raise ValueError(f"不支持的 distribution kind：{self.kind}")
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptedFailureSpec:
+    """用于金标准的确定性绝对故障时刻和维修时长。"""
+
+    failure_time: float
+    repair_duration: float
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.failure_time) or self.failure_time < 0:
+            raise ValueError("scripted failure_time 必须为有限非负数")
+        if not isfinite(self.repair_duration) or self.repair_duration <= 0:
+            raise ValueError("scripted repair_duration 必须为有限正数")
+
+
+@dataclass(frozen=True, slots=True)
+class MachineFailureSpec:
+    """一台物理机的 scripted 或 stochastic 故障配置。"""
+
+    machine_id: str
+    model_type: FailureModelType
+    scripted_failures: tuple[ScriptedFailureSpec, ...] = ()
+    failure_interval: TimeDistributionSpec | None = None
+    repair_duration: TimeDistributionSpec | None = None
+    clock_basis: Literal["calendar"] = "calendar"
+
+    def __post_init__(self) -> None:
+        if not self.machine_id:
+            raise ValueError("failure machine_id 不能为空")
+        if self.clock_basis != "calendar":
+            raise ValueError("当前 failure clock_basis 仅支持 calendar")
+        if self.model_type == "scripted":
+            if not self.scripted_failures:
+                raise ValueError("scripted failure 至少需要一个 occurrence")
+            if self.failure_interval is not None or self.repair_duration is not None:
+                raise ValueError("scripted failure 不接受随机分布")
+            times = [item.failure_time for item in self.scripted_failures]
+            if times != sorted(times) or len(times) != len(set(times)):
+                raise ValueError("scripted failure_time 必须严格递增")
+        elif self.model_type == "stochastic":
+            if self.scripted_failures:
+                raise ValueError("stochastic failure 不接受 scripted occurrence")
+            if self.failure_interval is None or self.repair_duration is None:
+                raise ValueError("stochastic failure 必须提供 interval 和 repair")
+        else:
+            raise ValueError(f"不支持的 failure model_type：{self.model_type}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +266,7 @@ class Scenario:
     setup_transitions: tuple[SetupTransition, ...] = ()
     cqt_constraints: tuple[CQTSpec, ...] = ()
     dedication_constraints: tuple[DedicationSpec, ...] = ()
+    failure_specs: tuple[MachineFailureSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -275,3 +348,12 @@ class Scenario:
                     f"Dedication {constraint.dedication_id} 引用了 route 中不存在的 "
                     f"step {sorted(missing)}"
                 )
+        failure_machines = [spec.machine_id for spec in self.failure_specs]
+        if len(failure_machines) != len(set(failure_machines)):
+            raise ValueError("每台 machine 最多只能有一条 failure spec")
+        unknown_failure_machines = set(failure_machines) - known_machines
+        if unknown_failure_machines:
+            raise ValueError(
+                "failure spec 引用了未知设备 "
+                f"{sorted(unknown_failure_machines)}"
+            )

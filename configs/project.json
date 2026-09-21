@@ -3,7 +3,7 @@
   "phase": "m1_simulation_reliability_baseline",
   "duration_weeks": 14,
   "simulation_implemented": false,
-  "simulation_status": "des_dedication_mc01_mc06_verified",
+  "simulation_status": "des_failure_mc01_mc07_verified",
   "m1_verified_cases": [
     "MC01_ROUTE_ORDER",
     "MC02_DYNAMIC_RELEASE_FIFO",
@@ -14,7 +14,7 @@
   ],
   "technical_route": {
     "status": "frozen",
-    "contract_version": "0.1.1",
+    "contract_version": "0.1.2",
     "current_milestone": "M1",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,

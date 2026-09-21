@@ -3,6 +3,8 @@
 from fab_scheduler.simulation.engine import (
     ActiveBatchSnapshot,
     BatchInterval,
+    DowntimeInterval,
+    MachineFailureSnapshot,
     MachineStatistics,
     ProcessingInterval,
     SetupInterval,
@@ -26,6 +28,8 @@ from fab_scheduler.simulation.dedication import (
 __all__ = [
     "ActiveBatchSnapshot",
     "BatchInterval",
+    "DowntimeInterval",
+    "MachineFailureSnapshot",
     "MachineStatistics",
     "ProcessingInterval",
     "SetupInterval",
