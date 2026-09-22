@@ -81,6 +81,31 @@ class EntityRandomStreams:
         )
         return value
 
+    def exponential(
+        self,
+        stream: str,
+        entity_key: str,
+        occurrence: int,
+        *,
+        mean: float,
+    ) -> float:
+        if mean <= 0:
+            raise ValueError("exponential mean 必须为正")
+        identity = (stream, entity_key, occurrence)
+        existing = self._ledger.get(identity)
+        if existing is not None:
+            if existing.distribution != "exponential" or existing.parameters != (mean,):
+                raise ValueError("相同随机 identity 使用了不同分布参数")
+            return existing.value
+        derived_seed = self.derived_seed(stream, entity_key, occurrence)
+        value = random.Random(derived_seed).expovariate(1.0 / mean)
+        self._ledger[identity] = RandomSampleRecord(
+            stream_name=stream, entity_id=entity_key, occurrence_index=occurrence,
+            distribution="exponential", parameters=(mean,), value=value,
+            derived_seed=derived_seed,
+        )
+        return value
+
     @property
     def ledger(self) -> tuple[RandomSampleRecord, ...]:
         return tuple(self._ledger[key] for key in sorted(self._ledger))

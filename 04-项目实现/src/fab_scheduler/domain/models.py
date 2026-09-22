@@ -12,7 +12,8 @@ BatchCompatibilityRule = Literal["crit_sameroutestep"]
 BatchMemberSelectionRule = Literal["fifo_queue_time_lot_id"]
 FailureModelType = Literal["scripted", "stochastic"]
 CalendarPMModelType = Literal["scripted", "periodic"]
-TimeDistributionKind = Literal["constant", "uniform"]
+TimeDistributionKind = Literal["constant", "uniform", "exponential"]
+ProcessingBasis = Literal["per_lot", "per_piece", "per_batch"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +47,7 @@ class DatasetProvenanceSpec:
 
 @dataclass(frozen=True, slots=True)
 class TimeDistributionSpec:
-    """分钟制时长分布；uniform 的第二参数为全宽。"""
+    """分钟制时长分布；uniform 的第二参数为全宽，exponential 参数为均值。"""
 
     kind: TimeDistributionKind
     mean_minutes: float
@@ -62,6 +63,9 @@ class TimeDistributionSpec:
         if self.kind == "uniform":
             if self.mean_minutes - self.width_minutes / 2 <= 0:
                 raise ValueError("uniform distribution 下界必须为正")
+        elif self.kind == "exponential":
+            if self.width_minutes != 0:
+                raise ValueError("exponential distribution 的 width_minutes 必须为 0")
         elif self.kind != "constant":
             raise ValueError(f"不支持的 distribution kind：{self.kind}")
 
@@ -232,10 +236,15 @@ class MachineSpec:
 
     machine_id: str
     initial_setup: str = ""
+    load_minutes: float = 0.0
+    unload_minutes: float = 0.0
+    cascading: bool = False
 
     def __post_init__(self) -> None:
         if not self.machine_id:
             raise ValueError("machine_id 不能为空")
+        if self.load_minutes < 0 or self.unload_minutes < 0:
+            raise ValueError("load/unload time 不能为负")
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +283,7 @@ class BatchSpec:
 
 @dataclass(frozen=True, slots=True)
 class OperationSpec:
-    """lot 路线中的一道确定性工序。"""
+    """lot 路线中的一道工序；processing_time 始终是派工可见的名义分钟数。"""
 
     step_id: int
     processing_time: float
@@ -284,6 +293,10 @@ class OperationSpec:
     required_setup: str | None = None
     setup_override_minutes: float | None = None
     batch_spec: BatchSpec | None = None
+    processing_distribution: TimeDistributionSpec | None = None
+    processing_basis: ProcessingBasis = "per_lot"
+    part_interval_minutes: float | None = None
+    batch_interval_minutes: float | None = None
 
     def __post_init__(self) -> None:
         if self.step_id < 1:
@@ -303,6 +316,14 @@ class OperationSpec:
                 )
             if self.setup_override_minutes <= 0:
                 raise ValueError("setup_override_minutes 必须为正")
+        if self.processing_basis not in {"per_lot", "per_piece", "per_batch"}:
+            raise ValueError(f"不支持的 processing_basis：{self.processing_basis}")
+        if self.processing_basis == "per_batch" and self.batch_spec is None:
+            raise ValueError("per_batch operation 必须提供 batch_spec")
+        if self.part_interval_minutes is not None and self.part_interval_minutes <= 0:
+            raise ValueError("part_interval_minutes 必须为正")
+        if self.batch_interval_minutes is not None and self.batch_interval_minutes <= 0:
+            raise ValueError("batch_interval_minutes 必须为正")
 
 
 @dataclass(frozen=True, slots=True)

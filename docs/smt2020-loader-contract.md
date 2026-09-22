@@ -1,7 +1,7 @@
 # SMT2020 Loader Contract
 
-版本：`0.1.0`  
-Loader：`fab_scheduler.data.load_smt2020` / `0.1.0`  
+版本：`0.1.1`
+Loader：`fab_scheduler.data.load_smt2020` / `0.1.1`
 状态：静态数据链已实现；完整可执行 Scenario 尚有 blocker
 
 ## 1. 边界
@@ -38,7 +38,7 @@ relative_path + size_bytes + SHA-256
 | `route.STEP` | sequence | `OperationDefinition.step_id` | 严格按原始 sequence，验证 `1..N`；不按文件名或 DESC 排序 | A |
 | `route.STNFAM` | — | `eligible_machine_ids` | 与 `tool.STNFAM` 连接，按 `STNQTY` 展开 `{STN}#0001...` | A+B |
 | `tool.STNGRP/STNFAMLOC` | — | machine group/location | downtime attachment 与 transport location | A |
-| `PDIST/PTIME/PTIME2/PTUNITS` | min | `DistributionDefinition` | 单位转分钟；uniform 保存 mean/full-width | A+D |
+| `PDIST/PTIME/PTIME2/PTUNITS` | min | `DistributionDefinition → TimeDistributionSpec` | 单位转分钟；uniform 保存 mean/full-width；commit 后统一 sampler 抽样 | A+D |
 | `PTPER` | lot/piece/batch | `processing_basis` | 原值保留，不用均值伪装 runtime | A |
 | `LTIME/ULTIME` | time | machine template | 单位转分钟 | A |
 | `STNCAP/PartInterval/BatchInterval` | time | cascading metadata | 单位转分钟；当前 runtime blocker | A |
@@ -65,7 +65,7 @@ relative_path + size_bytes + SHA-256
 
 ## 4. Distribution parser
 
-统一 parser 接受 `constant/uniform/exponential` 并保留类型和转换后的参数。能解析不表示 runtime 能抽样。当前 `TimeDistributionSpec` 仅支持 constant/uniform，且 `OperationSpec` 仍是确定性加工时长，所以原始 exponential failure 和所有 uniform processing 继续为 BLOCKER。
+统一 parser 接受 `constant/uniform/exponential` 并保留类型和转换后的参数。`TimeDistributionSpec` 与唯一 `sample_distribution(...)` runtime 统一使用分钟；processing、failure 和 PM 均复用该 sampler。`uniform(m,w)` 的第二参数仍是全宽；`exponential(m)` 以 raw `MTTF/MTTR` 的分钟均值转换为 rate `1/m`。该 exponential 参数解释来自既有 Data Contract/参考实现证据，不能表述为 raw 字段自描述。
 
 `uniform(m,w)` 按 `U[m-w/2,m+w/2]`，证据等级为 D（PySCFabSim 固定参考实现），不是 raw 文件自描述。
 
@@ -75,15 +75,15 @@ Loader 不猜测 initial setup、历史 dedication machine、已开启 CQT 的 s
 
 ## 6. Validation slice
 
-`LoaderConfig(mode="validation_slice")` 按 `(route_id, step_id)` 稳定选择一个真实、单工序、per-lot、无 setup/batch/CQT/dedication/sampling/rework/cascade 的记录，使用 `PTIME` 的均值投影构造一个 lot/一台 machine 的 fixed-horizon Scenario。结果 provenance 自动嵌入全部 raw file hashes、manifest、loader/contract 版本和 selector config。
+`LoaderConfig(mode="validation_slice")` 按 `(route_id, step_id)` 稳定选择一个真实、单工序、per-lot、无 setup/batch/CQT/dedication/sampling/rework/cascade 的记录，保留其真实 `TimeDistributionSpec` 并由 runtime 在 committed action 后抽样构造一个 lot/一台 machine 的 fixed-horizon Scenario。结果 provenance 自动嵌入全部 raw file hashes、manifest、loader/contract 版本和 selector config。
 
-均值投影只验证：
+该 slice 验证：
 
 ```text
 raw parser → static model → Scenario schema → simulate() → provenance
 ```
 
-它不验证随机 processing，也不能用于性能结论。
+它不验证完整加工组合、cascade 或性能结论。
 
 ## 7. Error and blocker policy
 

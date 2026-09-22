@@ -23,7 +23,7 @@ def scenario() -> Scenario:
 
 class SimulationAPITests(unittest.TestCase):
     def test_theta_schema_is_strict_and_optimizer_free(self) -> None:
-        self.assertEqual(POLICY_CONFIG_VERSION, "0.1.0")
+        self.assertEqual(POLICY_CONFIG_VERSION, "0.1.1")
         self.assertEqual(PolicyConfig("FIFO").policy_id, "fifo")
         with self.assertRaises(ValueError):
             PolicyConfig("weighted_dispatch")
@@ -46,7 +46,7 @@ class SimulationAPITests(unittest.TestCase):
             self.assertEqual(result.policy_parameters, {})
             self.assertEqual(result.seed, 42)
             self.assertEqual(result.contract_version, "0.1.3")
-            self.assertEqual(result.policy_contract_version, "0.1.0")
+            self.assertEqual(result.policy_contract_version, "0.1.1")
             self.assertEqual(result.scenario_identity, "SIMULATE_API")
             self.assertEqual(result.termination, "until_all_complete")
             self.assertEqual(result.provenance.git_commit, "api-test")

@@ -18,11 +18,12 @@ from fab_scheduler.domain.models import (
     OperationSpec,
     Scenario,
     SourceFileProvenance,
+    TimeDistributionSpec,
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.0"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.0"
+SMT2020_LOADER_VERSION = "0.1.1"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.1"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -288,6 +289,16 @@ def parse_distribution(
     return DistributionDefinition(normalized, first, second, unit)
 
 
+def to_runtime_distribution(definition: DistributionDefinition) -> TimeDistributionSpec:
+    """把已统一为分钟的原始分布映射为唯一 runtime 定义。"""
+
+    return TimeDistributionSpec(
+        kind=definition.kind,  # type: ignore[arg-type]
+        mean_minutes=definition.parameter_1_minutes,
+        width_minutes=definition.parameter_2_minutes or 0.0,
+    )
+
+
 def _int(value: str) -> int:
     number = float(value)
     if not number.is_integer():
@@ -516,8 +527,8 @@ def load_smt2020(
     rework_ops = tuple(op for op in operations if op.rework_step_id is not None)
     cascading_ops = tuple(op for op in operations if op.batch_interval_minutes is not None or op.part_interval_minutes is not None)
 
-    note("BLOCKER", "DI_UNSUPPORTED_PROCESSING_DISTRIBUTION", "runtime 的 OperationSpec 仍是确定性时长；原始工序全部使用 uniform", affected=len(operations))
-    note("BLOCKER", "DI_UNSUPPORTED_PROCESSING_BASIS", "per-piece/per-batch 与级联加工尚未形成完整 runtime 链", affected=sum(op.processing_basis != "per_lot" for op in operations))
+    note("INFO", "DI_PROCESSING_DISTRIBUTION_RUNTIME_SUPPORTED", "constant/uniform 已进入统一分钟制 sampler；不再使用均值投影执行 validation slice", affected=len(operations))
+    note("INFO", "DI_PROCESSING_BASIS_RUNTIME_SUPPORTED", "per_lot/per_piece/per_batch 已进入 processing duration resolver；Part/BatchInterval 仍单列 blocker", affected=sum(op.processing_basis != "per_lot" for op in operations))
     note("BLOCKER", "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE", "load/unload、STNCAP 与 Part/BatchInterval 尚未执行", affected=len(cascading_ops))
     note("BLOCKER", "DI_UNSUPPORTED_RELEASE_TEMPLATES", "RPT# 重复投放需要按 horizon 惰性生成，当前 Scenario 只接受显式 lot", templates=len(releases))
     note("BLOCKER", "DI_UNSUPPORTED_TRANSPORT_RUNTIME", "transport 表已解析，但 TRANSPORTING/ARRIVE runtime 尚未实现", pairs=len(transport))
@@ -529,7 +540,7 @@ def load_smt2020(
         note("BLOCKER", "DI_UNSUPPORTED_SETUP_MINRUN", "setupgrp.MINRUN 尚未进入 runtime", affected=setup_minrun_count)
     note("BLOCKER", "DI_MISSING_BATCH_DECISION_CONFIG", "B_target/T_max 不在 raw 数据中；正式场景需版本化 loader_config", batch_operations=len(batch_ops))
     if any(item.interval and item.interval.kind == "exponential" for item in down_calendars):
-        note("BLOCKER", "DI_UNSUPPORTED_EXPONENTIAL_FAILURE", "Failure runtime 分布类型尚不支持 exponential", calendars=len(down_calendars))
+        note("INFO", "DI_EXPONENTIAL_FAILURE_RUNTIME_SUPPORTED", "downcal exponential 已按均值参数进入共享 sampler", calendars=len(down_calendars))
     note("BLOCKER", "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT", "同一物理机可能附着多条 Failure/PM calendar，而当前 Scenario 每类每机最多一条", attachments=len(attachments))
     note(
         "WARNING", "DI_INITIAL_SETUP_UNKNOWN",
@@ -562,6 +573,8 @@ def load_smt2020(
         "stochastic_sampling_operations": len(sample_ops),
         "rework_operations": len(rework_ops),
         "cascading_operations": len(cascading_ops), "setup_transitions": setup_transition_count,
+        "processing_distribution_kinds": {kind: sum(op.processing.kind == kind for op in operations) for kind in sorted({op.processing.kind for op in operations})},
+        "processing_basis_counts": {basis: sum(op.processing_basis == basis for op in operations) for basis in sorted({op.processing_basis for op in operations})},
         "failure_calendars": len(down_calendars), "pm_calendars": len(pm_calendars), "calendar_attachments": len(attachments),
         "transport_pairs": len(transport), "unknown_initial_cqt_relationships": unknown_cqt,
         "unknown_initial_dedication_relationships": unknown_dedication,
@@ -585,7 +598,7 @@ def load_smt2020(
 
 
 def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest, config: LoaderConfig) -> Scenario:
-    """从真实记录选取单工序闭包；均值投影只用于 API 兼容 smoke。"""
+    """从真实记录选取单工序闭包；真实分布仅在 commit 后由 runtime 抽样。"""
 
     product_by_route = {item.route_id: item for item in model.products}
     candidates = [
@@ -607,12 +620,13 @@ def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest
         config.provenance_items(),
         tuple(SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256) for item in manifest.files),
     )
-    duration = op.processing.parameter_1_minutes
+    distribution = to_runtime_distribution(op.processing)
+    duration = distribution.mean_minutes
     return Scenario(
         scenario_id=f"{manifest.model_name}:validation-slice:{op.route_id}:{op.step_id}",
         dataset_version=manifest.dataset_version,
         machines=(MachineSpec(machine_id),),
-        lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id),), quantity_wafers=25),),
-        termination_mode="fixed_horizon", horizon=duration + 1,
+        lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id, processing_distribution=distribution, processing_basis=op.processing_basis),), quantity_wafers=25),),
+        termination_mode="fixed_horizon", horizon=duration + distribution.width_minutes / 2 + 1,
         dataset_provenance=provenance,
     )

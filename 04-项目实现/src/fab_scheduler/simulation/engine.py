@@ -71,6 +71,7 @@ from fab_scheduler.simulation.failure import (
     FailureOccurrence,
     FailureSchedule,
 )
+from fab_scheduler.simulation.processing import ProcessingDurationResolver
 
 
 class LotStatus(str, Enum):
@@ -525,6 +526,7 @@ class Simulator:
         self._setup_resolver = SetupDurationResolver(
             scenario.setup_transitions
         )
+        self._processing_resolver = ProcessingDurationResolver()
         self._cqt_runtime = CQTRuntime(scenario.cqt_constraints)
         self._dedication_runtime = DedicationRuntime(
             scenario.dedication_constraints
@@ -1480,11 +1482,17 @@ class Simulator:
                 if member.queue_entered_at is not None
             ),
             release_time=min(member.spec.release_time for member in members),
-            physical_processing_time=operation.processing_time,
+            physical_processing_time=self._processing_resolver.nominal(
+                operation,
+                quantity_wafers=sum(member.spec.quantity_wafers for member in members),
+            ),
             member_due_times=tuple(member.spec.due_time for member in members),
             member_remaining_nominal_processing_times=tuple(
                 sum(
-                    item.processing_time
+                    self._processing_resolver.nominal(
+                        item,
+                        quantity_wafers=member.spec.quantity_wafers,
+                    )
                     for item in member.spec.operations[
                         member.operation_index :
                     ]
@@ -1703,7 +1711,13 @@ class Simulator:
 
         batch_id = f"BATCH-{self._next_batch_seq:06d}"
         self._next_batch_seq += 1
-        finish_time = self.current_time + first_operation.processing_time
+        realization = self._processing_resolver.realize_batch(
+            operation=first_operation,
+            ordered_member_ids=tuple(lot.spec.lot_id for lot in member_lots),
+            total_wafers=decision.selected_wafers,
+            random_source=self.random_streams,
+        )
+        finish_time = self.current_time + realization.realized_minutes
         active = _ActiveBatch(
             batch_id=batch_id,
             machine_id=machine_id,
@@ -1901,7 +1915,14 @@ class Simulator:
         lot.status = LotStatus.PROCESSING
         machine.status = MachineStatus.PROCESSING
         machine.processing_started_at = self.current_time
-        finish_time = self.current_time + operation.processing_time
+        realization = self._processing_resolver.realize_lot(
+            operation=operation,
+            lot_id=lot.spec.lot_id,
+            quantity_wafers=lot.spec.quantity_wafers,
+            visit_index=0,
+            random_source=self.random_streams,
+        )
+        finish_time = self.current_time + realization.realized_minutes
         token = self._activate_until(machine, finish_time)
         self._record(
             event_type="PROCESS_START",

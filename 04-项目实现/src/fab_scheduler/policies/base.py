@@ -7,7 +7,7 @@ from math import inf, isfinite
 from typing import Literal, Protocol, Sequence
 
 
-DISPATCH_POLICY_CONTRACT_VERSION = "0.1.0"
+DISPATCH_POLICY_CONTRACT_VERSION = "0.1.1"
 
 
 @dataclass(frozen=True, slots=True)

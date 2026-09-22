@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
 
 from fab_scheduler.domain.models import MachineFailureSpec, TimeDistributionSpec
 from fab_scheduler.simulation.random_streams import EntityRandomStreams
+from fab_scheduler.simulation.distributions import sample_distribution
 
 
 FAILURE_RUNTIME_SCHEMA_VERSION = "0.1.0"
@@ -50,16 +50,6 @@ class FailureSchedule:
     def _sample_stochastic(self, machine_id: str, occurrence_index: int, basis_time: float) -> FailureOccurrence:
         spec = self._specs[machine_id]
         assert spec.failure_interval is not None and spec.repair_duration is not None
-        interval = self._sample(spec.failure_interval, stream=FAILURE_INTERVAL_STREAM, machine_id=machine_id, occurrence_index=occurrence_index)
-        repair = self._sample(spec.repair_duration, stream=REPAIR_DURATION_STREAM, machine_id=machine_id, occurrence_index=occurrence_index)
+        interval = sample_distribution(spec.failure_interval, random_source=self._streams, stream_name=FAILURE_INTERVAL_STREAM, entity_id=machine_id, occurrence_index=occurrence_index)
+        repair = sample_distribution(spec.repair_duration, random_source=self._streams, stream_name=REPAIR_DURATION_STREAM, entity_id=machine_id, occurrence_index=occurrence_index)
         return FailureOccurrence(machine_id, occurrence_index, basis_time + interval, repair, "stochastic")
-
-    def _sample(self, distribution: TimeDistributionSpec, *, stream: str, machine_id: str, occurrence_index: int) -> float:
-        if distribution.kind == "constant":
-            value = distribution.mean_minutes
-        else:
-            half_width = distribution.width_minutes / 2
-            value = self._streams.uniform(stream, machine_id, occurrence_index, distribution.mean_minutes - half_width, distribution.mean_minutes + half_width)
-        if not isfinite(value) or value <= 0:
-            raise ValueError("failure/repair sample 必须为有限正数")
-        return value

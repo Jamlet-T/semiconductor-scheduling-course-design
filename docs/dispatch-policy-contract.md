@@ -1,6 +1,6 @@
 # Dispatch Policy Contract
 
-版本：`0.1.0`
+版本：`0.1.1`
 
 适用范围：M1 deterministic baseline policies。本文定义策略如何比较 Engine 已判定可行的动作，不修改 Simulation Contract `0.1.3` 的物理事件语义。
 
@@ -27,7 +27,7 @@ Engine 独占 qualification、Dedication、Batch legality、machine availability
 - `member_lot_ids`：按 BatchFormation 已冻结顺序排列；
 - `route_id / step_id / operation_index`；
 - `queue_entered_at`：最老成员的入队时刻；
-- `physical_processing_time`：一次实际 machine processing duration；
+- `physical_processing_time`：派工时可见的**名义**一次物理加工时长；
 - member due dates；
 - member remaining nominal processing times。
 
@@ -72,7 +72,7 @@ queue_entered_at
 
 ### SPT
 
-按 `physical_processing_time` 最短者优先。普通 action 使用当前 operation 的加工时长；Batch 使用一次物理 batch 的加工时长，不乘成员数。Setup、transport、future downtime 和等待不计入 SPT。
+按 `physical_processing_time` 最短者优先。该字段在本版本表示分布期望值按 `PTPER` 换算后的名义时长；普通 action 使用当前 operation 的名义加工时长；Batch 使用一次物理 batch 的名义加工时长，不乘成员数。真实随机 realization 只能在 central commit 后抽样，不能被 SPT 前视。Setup、transport、future downtime 和等待不计入 SPT。
 
 ### EDD
 
@@ -87,6 +87,8 @@ CR_j(t)=\frac{d_j-t}{RPT_j}
 $$
 
 `RPT` 与 Metric Contract 一致，只含当前 operation 未执行的 nominal processing 与后续 nominal processing，不含 Setup、transport、等待和 expected downtime。缺少 due date 时为 `+∞`；负值合法；分母必须为有限正数，否则 Action invariant 失败。Batch action 使用 member CR 的最小值。
+
+随机加工不会改变 `RPT` 的 nominal 口径：未提交候选和未来 operation 均不得抽样，已提交 activity 的 realized duration 仅用于 DES 时间推进与活动快照。
 
 ## 5. Public simulation API
 

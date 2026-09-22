@@ -39,13 +39,13 @@
   },
   "smt2020_data_integration_gate": {
     "status": "not_passed_gaps",
-    "loader_contract_version": "0.1.0",
-    "loader_version": "0.1.0",
+    "loader_contract_version": "0.1.1",
+    "loader_version": "0.1.1",
     "validated_models": [
       "SMT2020_HVLM",
       "SMT2020_LVHM"
     ],
-    "blocker_count_per_model": 11,
+    "blocker_count_per_model": 8,
     "real_data_smoke": "fifo_single_operation_validation_slice_only",
     "next_gate": "smt2020_runtime_compatibility_gap_closure",
     "formal_experiments_allowed": false,

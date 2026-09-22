@@ -1,10 +1,10 @@
 # SMT2020 Data Integration Gate
 
-审计日期：2026-09-21  
-审计基线：`88d31834a2476e1cf9ae0f85a0815f1fbd2100e6`  
-Simulation Contract：`0.1.3`  
-Policy Contract：`0.1.0`  
-Loader Contract：`0.1.0`
+审计日期：2026-09-22
+审计基线：`47417c5110409c2e63c258535429f0a68f2b7818`
+Simulation Contract：`0.1.3`
+Policy Contract：`0.1.1`
+Loader Contract：`0.1.1`
 
 ## 1. Executive conclusion
 
@@ -12,7 +12,7 @@ Loader Contract：`0.1.0`
 
 本轮已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实数据 validation-slice smoke。两套 raw 数据跨文件引用均无 ERROR，M1 runtime 也未回归。
 
-Gate 不能通过，因为真实模型启用了当前 runtime 尚不能完整表达的随机加工、per-piece/per-batch/cascading、重复投放模板、transport、sampling、rework、setup MINRUN、exponential failure、多 calendar attachment；同时 raw 不提供 `B_target/T_max`，正式场景需要显式版本化配置。完整加载因此有意返回 `scenario=None`，不能通过取均值或忽略字段伪造可执行 Scenario。
+Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、重复投放模板、transport、sampling、rework、setup MINRUN、多 calendar attachment；同时 raw 不提供 `B_target/T_max`，正式场景需要显式版本化配置。已关闭的 processing distribution、PTPER 与 exponential failure 不会降低其余 blocker 的严重性；完整加载因此仍有意返回 `scenario=None`，不能通过取均值或忽略字段伪造可执行 Scenario。
 
 ## 2. 实际模型和 manifest
 
@@ -55,12 +55,12 @@ Gate 不能通过，因为真实模型启用了当前 runtime 尚不能完整表
 | --- | --- | --- | --- |
 | Product/Route/Operation | 完成，sequence/reference 已验证 | deterministic micro routes 已支持 | PASS-static |
 | Qualification | STNFAM→STNQTY→稳定 machine ID | Engine 已使用具体 machine | PASS |
-| Processing | uniform/PTPER/interval 全部保存 | uniform processing、per-piece/cascade 未实现 | BLOCKER |
+| Processing | uniform/PTPER/interval 全部保存 | uniform、per_lot/per_piece/per_batch runtime 已支持；interval/cascade 未实现 | PASS-partial / Cascade BLOCKER |
 | Setup | route override、transition、group/MINRUN 已保存 | transition 已支持，MINRUN 未执行 | BLOCKER |
 | Batch | wafer min/max 与 criterion 已保存 | 随机 per-batch、B_target/T_max 正式配置缺失 | BLOCKER |
 | CQT | source/target/unit 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
 | Dedication | source/target/physical qualification 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
-| Failure | calendar/attach/FOA 已解析 | exponential 与多 calendar/机不支持 | BLOCKER |
+| Failure | calendar/attach/FOA 已解析 | exponential runtime 已支持；多 calendar/机不支持 | BLOCKER |
 | PM | calendar/pieces/attach/FOA 已解析 | 多 calendar/机与历史 counter 缺口 | BLOCKER + warning |
 | Transport | `Fab→Fab uniform(7.5,2.5)` 已解析 | 无 TRANSPORTING/ARRIVE runtime | BLOCKER |
 | Sampling | StepPercent 已解析 | Bernoulli skip 未实现 | BLOCKER |
@@ -81,8 +81,6 @@ Gate 不能通过，因为真实模型启用了当前 runtime 尚不能完整表
 
 | Code | HVLM affected | LVHM affected | Required fix |
 | --- | ---: | ---: | --- |
-| `DI_UNSUPPORTED_PROCESSING_DISTRIBUTION` | 926 | 4013 | processing distribution runtime + entity-indexed stream |
-| `DI_UNSUPPORTED_PROCESSING_BASIS` | 436 | 1909 | per-piece/per-batch duration semantics |
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing |
 | `DI_UNSUPPORTED_RELEASE_TEMPLATES` | 5 | 21 | horizon-lazy release generator |
 | `DI_UNSUPPORTED_TRANSPORT_RUNTIME` | 1 pair | 1 | simple external transport event/runtime |
@@ -90,7 +88,6 @@ Gate 不能通过，因为真实模型启用了当前 runtime 尚不能完整表
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint |
 | `DI_MISSING_BATCH_DECISION_CONFIG` | 28 | 135 | explicit versioned B_target/T_max config |
-| `DI_UNSUPPORTED_EXPONENTIAL_FAILURE` | 11 calendars | 11 | exponential DistributionSpec/runtime |
 | `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 attachments | 303 | multiple calendars per physical machine |
 
 ## 7. Validation smoke
@@ -103,7 +100,7 @@ selector: route r_3, raw step 18
 tool family: DE_FE_1
 machine: DE_FE_1#0001
 raw processing distribution: uniform(mean=135.234, width=6.7617) min
-smoke projection: deterministic mean 135.234 min
+smoke processing: committed action 后按 uniform(mean=135.234, width=6.7617) 抽样
 scenario: SMT2020_HVLM:validation-slice:r_3:18
 horizon: 136.234 min
 result: 1 released, 1 completed
@@ -122,10 +119,10 @@ result: 1 released, 1 completed
 - `uniform(m,w)` 的均值/全宽解释：D/E，不是 raw 自描述；
 - machine initial setup 为空、wafer-PM initial counter=0：E/F，必须随结果标识；
 - initial dedication/CQT 历史：F，不恢复；
-- validation slice 使用 processing mean：仅 smoke projection，不能进入正式结果；
+- validation slice 使用真实 uniform sampler：仅 smoke compatibility，不能进入正式结果；
 - transport 被建模为外生无资源延迟：E，但当前 runtime 尚未执行；
 - `B_target/T_max`：raw 不提供，未来必须由版本化 experiment/loader config 给出；
-- processing distribution、release templates、transport、sampling/rework、cascade/load-unload、setup MINRUN、exponential failure、multi-calendar attachment：当前明确 unsupported，全部列为 BLOCKER。
+- load-unload/cascade、release templates、transport、sampling/rework、setup MINRUN、batch decision config、multi-calendar attachment：当前明确 unsupported，全部列为 BLOCKER。
 
 没有 C 级论文/官方资料被单独用于闭合本轮关键语义。
 
@@ -135,18 +132,18 @@ result: 1 released, 1 completed
 | --- | --- | --- | --- | --- |
 | DI-E01 | Manifest/hash | `manifest.py` + stability tests | PASS | — |
 | DI-E02 | Product/Route/Operation/Tool/Lot mapping | static model + reconciliation | PASS-static | future lot 仍为 template |
-| DI-E03 | Qualification/Processing mapping | qualification closed; distribution preserved | GAP | runtime 不支持真实加工语义 |
+| DI-E03 | Qualification/Processing mapping | distribution sampler、PTPER resolver、真实 validation slice | PASS-partial | load/unload/cascade 由 DI-E10 阻塞 |
 | DI-E04 | Setup mapping | transition/group/MINRUN parsed | GAP | MINRUN runtime |
-| DI-E05 | Batch mapping | wafer bounds/criterion parsed | GAP | random duration + decision config |
+| DI-E05 | Batch mapping | wafer bounds/criterion + per-batch single physical sample | GAP | B_target/T_max decision config |
 | DI-E06 | CQT mapping | 330 constraints、跨步统计、refs closed | PASS | initial history warning |
 | DI-E07 | Dedication mapping | 91 constraints、refs closed | PASS | initial history warning |
-| DI-E08 | Failure mapping | calendars/attachments parsed | GAP | exponential + multi-calendar runtime |
+| DI-E08 | Failure mapping | exponential sampler + calendar/attachments parsed | GAP | multi-calendar runtime |
 | DI-E09 | PM mapping | calendar/pieces/FOA parsed | GAP | multi-calendar + initial counter |
 | DI-E10 | Transport/Sampling/Rework/Cascade | fields audited | GAP | target cohort 实际启用，不能排除 |
 | DI-E11 | Initial WIP unknown history auditable | four explicit warnings and counts | PASS | historical facts remain unrecoverable |
 | DI-E12 | raw→parsed→Scenario references | zero ERROR; actual-data tests | PASS-static | full executable Scenario blocked |
 | DI-E13 | Real-data provenance | manifest/raw hashes embedded in smoke result | PASS |
 | DI-E14 | Real-data end-to-end smoke | single FIFO validation slice | PASS-limited | compatibility only |
-| DI-E15 | BLOCKER count=0 | 11 blocker codes/model | GAP | count > 0 |
+| DI-E15 | BLOCKER count=0 | 8 blocker codes/model | GAP | count > 0 |
 
 最终状态：`not_passed_gaps`。Runtime Reliability 与 M1 继续为 passed；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动。下一阶段唯一建议 Gate 是 **SMT2020 Runtime Compatibility Gap Closure**，按依赖顺序补齐真实 processing/release/transport/route branching/calendar semantics 后重新执行本 Gate。

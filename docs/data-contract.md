@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.0` 已完成静态数据链和真实 validation slice，但 Data Integration Gate 因 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.1` 已完成静态数据链、真实随机 validation slice 与 processing runtime mapping，但 Data Integration Gate 因 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -98,7 +98,7 @@ eligible_machines(operation)
 | `PartInterval` | `CascadingSpec.part_interval` | lot 最后一片离开时刻为基础抽样加 `(pieces-1)*interval`；设备可用时刻为 `pieces*interval`，分别产生日志 |
 | `BatchInterval` | `CascadingSpec.batch_interval` | lot 完工仍使用加工分布；设备可用间隔使用该固定值 |
 
-load/unload 是否计入设备释放时刻按 `STNCAP` 的级联标记处理，并分别记录 lot 完工与 machine 可用事件。Basic DES 的 MC01、MC02只使用确定性 `processing_time`，尚未实现上述随机分布和级联。
+load/unload 是否计入设备释放时刻按 `STNCAP` 的级联标记处理，并分别记录 lot 完工与 machine 可用事件。Processing distribution、`per_lot/per_piece/per_batch` 已由提交后一次性 sampler 与 duration resolver 执行；`PartInterval/BatchInterval`、`STNCAP` cascade 以及 load/unload 的 lot 完工与 machine release 双时点仍未实现，保持 Data Integration BLOCKER。
 
 ## 5. 动态投放、交期和优先级
 
@@ -283,6 +283,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.0` 实现。完整 raw SMT2020 → executable Scenario 仍因真实加工、投放、运输、抽样/返工、级联和 calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.1` 实现。完整 raw SMT2020 → executable Scenario 仍因投放、运输、抽样/返工、级联和 calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
 
 这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验仍要等待 8 个 micro case 全部通过。

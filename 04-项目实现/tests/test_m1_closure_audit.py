@@ -334,7 +334,7 @@ class M1ClosureMetricAndBoundaryTests(unittest.TestCase):
         self.assertEqual(result.provenance.simulation_contract_version, "0.1.3")
         self.assertEqual(
             result.provenance.dispatch_policy_contract_version,
-            "0.1.0",
+            "0.1.1",
         )
 
     def test_provenance_contains_behavior_affecting_scenario_fields(self) -> None:

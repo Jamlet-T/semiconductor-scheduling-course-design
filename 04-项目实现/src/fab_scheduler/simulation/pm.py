@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
 
 from fab_scheduler.domain.models import (
     CalendarPMSpec,
@@ -11,6 +10,7 @@ from fab_scheduler.domain.models import (
     WaferPMSpec,
 )
 from fab_scheduler.simulation.random_streams import EntityRandomStreams
+from fab_scheduler.simulation.distributions import sample_distribution
 
 
 PM_RUNTIME_SCHEMA_VERSION = "0.1.0"
@@ -166,11 +166,4 @@ class PMRuntime:
         )
 
     def _sample(self, distribution: TimeDistributionSpec, stream: str, pm_id: str, occurrence: int) -> float:
-        if distribution.kind == "constant":
-            value = distribution.mean_minutes
-        else:
-            half_width = distribution.width_minutes / 2
-            value = self._streams.uniform(stream, pm_id, occurrence, distribution.mean_minutes - half_width, distribution.mean_minutes + half_width)
-        if not isfinite(value) or value <= 0:
-            raise ValueError("PM interval/duration sample 必须为有限正数")
-        return value
+        return sample_distribution(distribution, random_source=self._streams, stream_name=stream, entity_id=pm_id, occurrence_index=occurrence)

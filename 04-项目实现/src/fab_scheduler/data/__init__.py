@@ -11,11 +11,12 @@ from fab_scheduler.data.smt2020_loader import (
     SMT2020_LOADER_VERSION,
     load_smt2020,
     parse_distribution,
+    to_runtime_distribution,
 )
 
 __all__ = [
     "DatasetIdentity", "DatasetManifest", "LoadedScenario", "LoaderAuditEntry",
     "LoaderConfig", "LoaderError", "ManifestFile", "SMT2020_LOADER_CONTRACT_VERSION",
     "SMT2020_LOADER_VERSION", "build_dataset_manifest", "identify_dataset",
-    "load_smt2020", "parse_distribution",
+    "load_smt2020", "parse_distribution", "to_runtime_distribution",
 ]

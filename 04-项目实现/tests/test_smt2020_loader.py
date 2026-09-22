@@ -15,6 +15,7 @@ from fab_scheduler.data import (
     build_dataset_manifest,
     load_smt2020,
     parse_distribution,
+    to_runtime_distribution,
 )
 
 
@@ -69,7 +70,7 @@ class SMT2020LoaderTests(unittest.TestCase):
                 raise AssertionError(f"loader 修改了原始数据：{model}")
 
     def test_public_contract_and_detected_models(self) -> None:
-        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.0")
+        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.1")
         self.assertEqual(set(self.loaded), set(MODELS))
         for model, loaded in self.loaded.items():
             self.assertEqual(loaded.dataset_manifest.model_name, model)
@@ -145,9 +146,9 @@ class SMT2020LoaderTests(unittest.TestCase):
 
     def test_all_runtime_gaps_are_explicit_blockers(self) -> None:
         required_codes = {
-            "DI_UNSUPPORTED_PROCESSING_DISTRIBUTION", "DI_UNSUPPORTED_RELEASE_TEMPLATES",
+            "DI_UNSUPPORTED_RELEASE_TEMPLATES",
             "DI_UNSUPPORTED_TRANSPORT_RUNTIME", "DI_UNSUPPORTED_SAMPLING", "DI_UNSUPPORTED_REWORK",
-            "DI_UNSUPPORTED_SETUP_MINRUN", "DI_UNSUPPORTED_EXPONENTIAL_FAILURE",
+            "DI_UNSUPPORTED_SETUP_MINRUN",
         }
         for loaded in self.loaded.values():
             codes = {item.code for item in loaded.loader_audit if item.severity == "BLOCKER"}
@@ -170,6 +171,14 @@ class SMT2020LoaderTests(unittest.TestCase):
     def test_uniform_parser_uses_mean_and_full_width(self) -> None:
         spec = parse_distribution("uniform", "7.5", "2.5", "min")
         self.assertEqual((spec.parameter_1_minutes, spec.parameter_2_minutes), (7.5, 2.5))
+        runtime = to_runtime_distribution(spec)
+        self.assertEqual((runtime.kind, runtime.mean_minutes, runtime.width_minutes), ("uniform", 7.5, 2.5))
+
+    def test_real_data_processing_basis_and_distribution_statistics_are_preserved(self) -> None:
+        self.assertEqual(self.loaded["SMT2020_HVLM"].statistics["processing_basis_counts"], {"per_batch": 28, "per_lot": 490, "per_piece": 408})
+        self.assertEqual(self.loaded["SMT2020_LVHM"].statistics["processing_basis_counts"], {"per_batch": 135, "per_lot": 2104, "per_piece": 1774})
+        self.assertEqual(self.loaded["SMT2020_HVLM"].statistics["processing_distribution_kinds"], {"uniform": 926})
+        self.assertEqual(self.loaded["SMT2020_LVHM"].statistics["processing_distribution_kinds"], {"uniform": 4013})
 
     def test_real_data_validation_slice_reaches_simulator_with_manifest_provenance(self) -> None:
         loaded = load_smt2020(DATASETS_ROOT, "SMT2020_HVLM", loader_config=LoaderConfig(mode="validation_slice"))
@@ -184,6 +193,7 @@ class SMT2020LoaderTests(unittest.TestCase):
         self.assertEqual(provenance["manifest_hash"], loaded.dataset_manifest.manifest_hash)
         self.assertEqual(len(provenance["raw_files"]), len(loaded.dataset_manifest.files))
         self.assertEqual(result.policy_id, "fifo")
+        self.assertEqual(len([item for item in result.random_sample_ledger if item.stream_name == "processing"]), 1)
 
 
 if __name__ == "__main__":
