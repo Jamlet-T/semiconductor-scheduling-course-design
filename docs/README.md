@@ -14,6 +14,7 @@
 - [Semantic Evidence Matrix](semantic-evidence-matrix.md)：原始数据、参考实现、本地假设和不可恢复历史状态的证据分级。
 - [PySCFabSim Semantic Diff](pyscfabsim-semantic-diff.md)：开源仿真器源码语义审计。
 - [SMT2020 Loader Contract](smt2020-loader-contract.md)：manifest、raw 字段到静态领域模型/Scenario 的映射及 blocker 规则。
+- [SMT2020 Transport Runtime Audit](smt2020-transport-runtime-audit.md)：搬运事件、随机身份、真实 route pair 与缺失 pair 审计闭环。
 - [SMT2020 Data Integration Gate](smt2020-data-integration-gate.md)：真实数据 reconciliation、validation smoke 与 DI-E01～DI-E15 判定。
 
-M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。SMT2020 Data Integration Gate 已完成首轮正式审计，因真实 processing/release/transport/sampling/rework/cascade/calendar runtime 缺口为 `not_passed_gaps`；因此没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。SMT2020 数据随仓库位于根目录 `datasets/`，已纳入版本控制的数据保持内容只读、原始字节不可变；派生数据写入 `runs/` 或 `artifacts/`。原始教学资料仍需通过教师或组内授权渠道取得，不在公开仓库保存。
+M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。SMT2020 Data Integration Gate 正在进行 Runtime Compatibility Gap Closure；processing distribution/PTPER、exponential failure 与 transport 已形成 raw→Scenario→runtime→test 闭环，仍有 7 类 blocker，因此状态保持 `not_passed_gaps`。没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。SMT2020 数据随仓库位于根目录 `datasets/`，已纳入版本控制的数据保持内容只读、原始字节不可变；派生数据写入 `runs/` 或 `artifacts/`。原始教学资料仍需通过教师或组内授权渠道取得，不在公开仓库保存。

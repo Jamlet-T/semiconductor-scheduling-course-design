@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 import unittest
 
+from fab_scheduler.data import (
+    SMT2020_LOADER_CONTRACT_VERSION,
+    SMT2020_LOADER_VERSION,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_CONFIG = REPOSITORY_ROOT / "configs" / "project.json"
@@ -62,6 +67,18 @@ class ContractConfigurationTests(unittest.TestCase):
             self.micro_cases["event_priority_contract_version"],
             self.project["technical_route"]["contract_version"],
         )
+
+    def test_data_integration_config_matches_live_loader_and_stays_closed(self) -> None:
+        gate = self.project["smt2020_data_integration_gate"]
+        self.assertEqual(
+            gate["loader_contract_version"],
+            SMT2020_LOADER_CONTRACT_VERSION,
+        )
+        self.assertEqual(gate["loader_version"], SMT2020_LOADER_VERSION)
+        self.assertEqual(gate["blocker_count_per_model"], 7)
+        self.assertEqual(gate["status"], "not_passed_gaps")
+        self.assertFalse(gate["formal_experiments_allowed"])
+        self.assertFalse(gate["optimizer_training_allowed"])
 
     def test_all_eight_gold_cases_are_present_once(self) -> None:
         expected_ids = {

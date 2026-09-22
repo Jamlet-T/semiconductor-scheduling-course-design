@@ -1,7 +1,7 @@
 # 可信轻量 DES 架构
 
 适用版本：Simulation Contract `0.1.3`
-当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM，已验证 MC01～MC08
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport；MC01～MC08 保持 verified
 
 锁定能力：正式 SMT2020 loader、优化器
 
@@ -199,5 +199,6 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | Dedication 与 Setup/CQT/Batch 组合边界 | VERIFIED | 组合边界测试 |
 | Failure | VERIFIED | MC07 显式事件、抢占继续、stale completion 与终态快照 |
 | PM | VERIFIED | MC08 Calendar/Wafer PM、抢占恢复、计数、重叠、同刻优先级与 fixed horizon |
+| Transport | VERIFIED-LIMITED-SLICE | configured/missing pair、CRN、CQT、fixed horizon 与真实 HVLM/LVHM 两工序 slice |
 
-MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT 与 Dedication 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。M1 状态为 `passed`，SMT2020 Data Integration Gate 仍 pending，优化器继续禁用。完整结论见 `m1-closure-audit.md`。
+MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication 与 Transport 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。M1 状态为 `passed`；Transport blocker 已关闭，但 SMT2020 Data Integration Gate 仍因另外 7 类 gap 为 `not_passed_gaps`，优化器继续禁用。完整结论见 `m1-closure-audit.md` 和 `smt2020-transport-runtime-audit.md`。

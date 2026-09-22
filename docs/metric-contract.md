@@ -104,6 +104,7 @@ Failure 与 PM 使用单一 downtime owner，因此两个 downtime integral 不�
 - machine 时间守恒；
 - Batch wafer 容量与成员 wafer 合计；
 - CQT duration/excess/violation；
-- Dedication record identity 与生命周期。
+- Dedication record identity 与生命周期；
+- Transport interval、active snapshot、metrics、trace 与 RandomSampleLedger 的一致性。
 
-该检查器覆盖当前轻量 DES 输出，但尚未覆盖未来正式 loader、transport、sampling/rework、wafer throughput、tardiness 和利用率比率。
+该检查器覆盖当前轻量 DES 和受限 Transport 输出，但尚未覆盖 sampling/rework、正式 full-fab loader 结果、wafer throughput、tardiness 和利用率比率。

@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.1` 已完成静态数据链、真实随机 validation slice 与 processing runtime mapping，但 Data Integration Gate 因 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.2` 已完成静态数据链、真实加工/搬运 validation slice，以及 processing、exponential failure 和 transport runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -159,7 +159,7 @@ n_wafers >= B_min
 and (n_wafers >= B_target or feasible_wait >= T_max)
 ```
 
-低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射；per-batch 随机加工及 raw 中不存在的 `B_target/T_max` 版本化配置仍为 Gate blocker。
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次；raw 中不存在的 `B_target/T_max` 版本化配置仍为 Gate blocker。
 
 ## 8. Setup
 
@@ -230,7 +230,7 @@ route.STIME
 - 所有被中断活动的旧完成事件必须失效；
 - failure、repair、pm_interval、pm_duration 使用独立实体索引随机流。
 
-这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset 和 overlap ownership 是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME`；正式 loader 已装配 calendar/attach/FOA 静态链，exponential failure 与同机多 calendar runtime 仍为 blocker。
+这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset 和 overlap ownership 是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME`；正式 loader 已装配 calendar/attach/FOA 静态链，exponential failure 已接入统一 sampler，同机多 calendar runtime 仍为 blocker。
 
 ## 12. Transport
 
@@ -249,7 +249,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 - transport 计入 cycle time 和跨越该区间的 CQT；
 - 不创建 OHT/AGV/轨道资源。
 
-当前状态为 `STATIC-LOADER-VERIFIED / RUNTIME-NOT-IMPLEMENTED`。真实 `fromto` 已进入 `TransportDefinition`，MC01、MC02 fixture 显式采用 0 搬运。
+当前状态为 `STATIC-LOADER-VERIFIED / RUNTIME-VERIFIED-LIMITED-SLICE`。真实 `fromto` 已进入 `TransportDefinition/TransportSpec`；runtime 使用稳定 `transport` 随机流、显式 `TRANSPORTING/TRANSPORT_ARRIVE`、fixed-horizon active snapshot 和 transport metrics。HVLM/LVHM 的真实 `Fab→Fab` 两工序 slice 均已贯通；真实 `Delay→Fab` slice 证明未配置 pair 为零时长、无随机抽样且进入 missing-pair audit。route reconciliation 同时记录 HVLM/LVHM 的全部四类 location 转移，避免只看 `fromto` 表而漏报未配置关系。该结论不包含显式 AMHS/OHT，也不解除 rework visit 尚未实现的 blocker；当前 transport identity 的 visit 维度保留为 0，待 rework 闭环时必须一并复核。
 
 ## 13. Provenance 与数据版本
 
@@ -283,6 +283,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.1` 实现。完整 raw SMT2020 → executable Scenario 仍因投放、运输、抽样/返工、级联和 calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.2` 实现。完整 raw SMT2020 → executable Scenario 仍因投放、抽样/返工、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
 
-这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验仍要等待 8 个 micro case 全部通过。
+这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的 7 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。

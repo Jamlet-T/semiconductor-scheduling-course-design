@@ -204,4 +204,93 @@ def audit_result_invariants(
         if record.released_at < record.established_at:
             violations.append(f"{record.dedication_id} 释放早于建立")
 
+    transport_missing: dict[tuple[str, str], int] = {}
+    for interval in result.transport_intervals:
+        if interval.finish < interval.start:
+            violations.append(f"{interval.lot_id} transport finish 早于 start")
+        if abs((interval.finish - interval.start) - interval.duration) > tolerance:
+            violations.append(f"{interval.lot_id} transport duration 不一致")
+        if interval.finish > result.metrics.end_time + tolerance:
+            violations.append(f"{interval.lot_id} transport 超出仿真终点")
+        if interval.missing_pair:
+            if abs(interval.duration) > tolerance:
+                violations.append(f"{interval.lot_id} missing transport 非零时长")
+            key = (interval.from_location, interval.to_location)
+            transport_missing[key] = transport_missing.get(key, 0) + 1
+
+    active_transport_lots = [item.lot_id for item in result.active_transports]
+    if len(active_transport_lots) != len(set(active_transport_lots)):
+        violations.append("active transport lot_id 重复")
+    for snapshot in result.active_transports:
+        expected_remaining = max(
+            0.0,
+            snapshot.scheduled_finish - result.metrics.end_time,
+        )
+        if snapshot.start > result.metrics.end_time + tolerance:
+            violations.append(f"{snapshot.lot_id} active transport 尚未开始")
+        if snapshot.scheduled_finish <= result.metrics.end_time - tolerance:
+            violations.append(f"{snapshot.lot_id} active transport 已应完成")
+        if abs(snapshot.remaining_duration - expected_remaining) > tolerance:
+            violations.append(
+                f"{snapshot.lot_id} active transport remaining 不一致"
+            )
+
+    transport_started = len(result.transport_intervals) + len(result.active_transports)
+    expected_transport_metrics = {
+        "started_count": transport_started,
+        "completed_count": len(result.transport_intervals),
+        "active_count": len(result.active_transports),
+        "missing_pair_count": sum(transport_missing.values()),
+    }
+    for name, expected in expected_transport_metrics.items():
+        reported = getattr(result.transport_metrics, name)
+        if reported != expected:
+            violations.append(
+                f"transport {name} 不一致：reported={reported}, records={expected}"
+            )
+    expected_transport_minutes = sum(
+        interval.duration for interval in result.transport_intervals
+    )
+    if abs(
+        result.transport_metrics.total_minutes - expected_transport_minutes
+    ) > tolerance:
+        violations.append("transport total_minutes 不一致")
+    expected_missing_pairs = tuple(
+        (from_location, to_location, count)
+        for (from_location, to_location), count in sorted(transport_missing.items())
+    )
+    if result.transport_metrics.missing_pairs != expected_missing_pairs:
+        violations.append("transport missing_pairs 不一致")
+    transport_samples = sum(
+        record.stream_name == "transport"
+        for record in result.random_sample_ledger
+    )
+    transport_distribution_by_pair = {
+        (item.from_location, item.to_location): item.duration.kind
+        for item in scenario.transport_specs
+    }
+    stochastic_transport_starts = sum(
+        transport_distribution_by_pair.get(
+            (item.from_location, item.to_location)
+        ) not in {None, "constant"}
+        for item in (*result.transport_intervals, *result.active_transports)
+    )
+    if transport_samples != stochastic_transport_starts:
+        violations.append(
+            "transport 随机记录与 RandomSampleLedger 不一致"
+        )
+
+    trace_transport_started = sum(
+        record.event_type in {"TRANSPORT_START", "TRANSPORT_MISSING"}
+        for record in result.trace
+    )
+    trace_transport_completed = sum(
+        record.event_type in {"TRANSPORT_ARRIVE", "TRANSPORT_MISSING"}
+        for record in result.trace
+    )
+    if trace_transport_started != result.transport_metrics.started_count:
+        violations.append("transport started_count 与 trace 不一致")
+    if trace_transport_completed != result.transport_metrics.completed_count:
+        violations.append("transport completed_count 与 trace 不一致")
+
     return ResultInvariantAudit(tuple(violations))

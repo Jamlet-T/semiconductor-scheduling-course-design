@@ -71,6 +71,19 @@ class TimeDistributionSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class TransportSpec:
+    """一条 location pair 的外生、无容量搬运时长分布。"""
+
+    from_location: str
+    to_location: str
+    duration: TimeDistributionSpec
+
+    def __post_init__(self) -> None:
+        if not self.from_location or not self.to_location:
+            raise ValueError("transport location 不能为空")
+
+
+@dataclass(frozen=True, slots=True)
 class ScriptedFailureSpec:
     """用于金标准的确定性绝对故障时刻和维修时长。"""
 
@@ -239,6 +252,7 @@ class MachineSpec:
     load_minutes: float = 0.0
     unload_minutes: float = 0.0
     cascading: bool = False
+    location_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.machine_id:
@@ -391,6 +405,7 @@ class Scenario:
     calendar_pm_specs: tuple[CalendarPMSpec, ...] = ()
     wafer_pm_specs: tuple[WaferPMSpec, ...] = ()
     dataset_provenance: DatasetProvenanceSpec | None = None
+    transport_specs: tuple[TransportSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -411,6 +426,38 @@ class Scenario:
                     raise ValueError(
                         f"{lot.lot_id}/step {operation.step_id} 引用了未知设备 {sorted(unknown)}"
                     )
+        transport_keys = [
+            (item.from_location, item.to_location)
+            for item in self.transport_specs
+        ]
+        if len(transport_keys) != len(set(transport_keys)):
+            raise ValueError("transport location pair 不能重复")
+        if self.transport_specs:
+            missing_locations = sorted(
+                machine.machine_id
+                for machine in self.machines
+                if not machine.location_id
+            )
+            if missing_locations:
+                raise ValueError(
+                    "配置 transport 时所有 machine 必须有 location_id："
+                    f"{missing_locations}"
+                )
+            for lot in self.lots:
+                for operation in lot.operations:
+                    locations = {
+                        next(
+                            machine.location_id
+                            for machine in self.machines
+                            if machine.machine_id == machine_id
+                        )
+                        for machine_id in operation.eligible_machines
+                    }
+                    if len(locations) != 1:
+                        raise ValueError(
+                            f"{lot.lot_id}/step {operation.step_id} 的 eligible machine "
+                            "必须解析为唯一 location"
+                        )
         if self.termination_mode == "fixed_horizon":
             if self.horizon is None or self.horizon < 0:
                 raise ValueError("fixed_horizon 必须提供非负 horizon")

@@ -72,10 +72,16 @@ from fab_scheduler.simulation.failure import (
     FailureSchedule,
 )
 from fab_scheduler.simulation.processing import ProcessingDurationResolver
+from fab_scheduler.simulation.transport import (
+    TRANSPORT_RUNTIME_SCHEMA_VERSION,
+    TRANSPORT_STREAM,
+    TransportResolver,
+)
 
 
 class LotStatus(str, Enum):
     UNRELEASED = "UNRELEASED"
+    TRANSPORTING = "TRANSPORTING"
     QUEUED = "QUEUED"
     RESERVED = "RESERVED"
     PROCESSING = "PROCESSING"
@@ -125,6 +131,7 @@ class _LotRuntime:
 @dataclass(slots=True)
 class _MachineRuntime:
     machine_id: str
+    location_id: str | None = None
     current_setup: str = ""
     status: MachineStatus = MachineStatus.IDLE
     lot_id: str | None = None
@@ -171,6 +178,75 @@ class ProcessingInterval:
     step_id: int
     start: float
     finish: float
+
+
+@dataclass(frozen=True, slots=True)
+class TransportInterval:
+    lot_id: str
+    route_id: str
+    from_step_id: int
+    to_step_id: int
+    from_location: str
+    to_location: str
+    start: float
+    finish: float
+    duration: float
+    missing_pair: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveTransportSnapshot:
+    lot_id: str
+    route_id: str
+    from_step_id: int
+    to_step_id: int
+    from_location: str
+    to_location: str
+    start: float
+    scheduled_finish: float
+    remaining_duration: float
+
+
+@dataclass(slots=True)
+class _ActiveTransport:
+    lot_id: str
+    route_id: str
+    from_step_id: int
+    to_step_id: int
+    from_location: str
+    to_location: str
+    start: float
+    scheduled_finish: float
+    duration: float
+
+
+@dataclass(frozen=True, slots=True)
+class TransportMetrics:
+    started_count: int
+    completed_count: int
+    active_count: int
+    missing_pair_count: int
+    total_minutes: float
+    missing_pairs: tuple[tuple[str, str, int], ...] = ()
+
+    @property
+    def transition_count(self) -> int:
+        return self.started_count
+
+    @property
+    def configured_pair_count(self) -> int:
+        return self.started_count - self.missing_pair_count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "started_count": self.started_count,
+            "completed_count": self.completed_count,
+            "active_count": self.active_count,
+            "configured_pair_count": self.configured_pair_count,
+            "missing_pair_count": self.missing_pair_count,
+            "total_minutes": self.total_minutes,
+            "missing_pairs": self.missing_pairs,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +412,9 @@ class SimulationResult:
     pm_count: int
     total_pm_downtime: float
     random_sample_ledger: tuple[RandomSampleRecord, ...]
+    transport_intervals: tuple[TransportInterval, ...]
+    active_transports: tuple[ActiveTransportSnapshot, ...]
+    transport_metrics: TransportMetrics
 
     @property
     def policy_id(self) -> str:
@@ -401,6 +480,9 @@ class SimulationResult:
             "PM_DUE",
             "PM_START",
             "PM_FINISH",
+            "TRANSPORT_START",
+            "TRANSPORT_ARRIVE",
+            "TRANSPORT_MISSING",
         }
         rows = []
         for record in self.trace:
@@ -477,6 +559,10 @@ class SimulationResult:
                         "wafer_counter_after": record.wafer_counter_after,
                         "wafer_threshold": record.wafer_threshold,
                         "processed_wafers": record.processed_wafers,
+                        "transport_from": record.transport_from_location,
+                        "transport_to": record.transport_to_location,
+                        "transport_duration": record.transport_duration,
+                        "transport_missing": record.transport_missing_pair,
                     }.items()
                     if value is not None
                 }
@@ -516,6 +602,8 @@ class Simulator:
         self._batch_intervals: list[BatchInterval] = []
         self._downtime_intervals: list[DowntimeInterval] = []
         self._pm_intervals: list[PMInterval] = []
+        self._transport_intervals: list[TransportInterval] = []
+        self._active_transports: dict[str, _ActiveTransport] = {}
         self._active_batches: dict[str, _ActiveBatch] = {}
         self._batch_formation = BatchFormation()
         self._next_batch_seq = 1
@@ -543,6 +631,7 @@ class Simulator:
             self.random_streams,
         )
         self._active_pm_occurrence: dict[str, PMOccurrence] = {}
+        self._transport_resolver = TransportResolver(scenario.transport_specs)
         self._lots = {
             lot.lot_id: _LotRuntime(
                 spec=lot,
@@ -553,6 +642,7 @@ class Simulator:
         self._machines = {
             machine.machine_id: _MachineRuntime(
                 machine_id=machine.machine_id,
+                location_id=machine.location_id,
                 current_setup=machine.initial_setup,
             )
             for machine in scenario.machines
@@ -595,6 +685,8 @@ class Simulator:
         )
         cqt_metrics = self._cqt_runtime.metrics(at_time=end_time)
         dedication_metrics = self._dedication_runtime.metrics
+        transport_metrics = self._build_transport_metrics()
+        active_transports = self._build_active_transport_snapshots(end_time)
         provenance = RunProvenance(
             simulation_contract_version=SIMULATION_CONTRACT_VERSION,
             dispatch_policy_contract_version=(
@@ -622,6 +714,21 @@ class Simulator:
                     "interval": "pm_interval",
                     "duration": "pm_duration",
                     "identity": "pm_id+occurrence_index",
+                },
+                "transport_runtime_schema_version": (
+                    TRANSPORT_RUNTIME_SCHEMA_VERSION
+                ),
+                "transport_model": {
+                    "resource_capacity": "external_unbounded",
+                    "initial_leg": "none",
+                    "missing_pair": "zero_duration_audited",
+                },
+                "transport_random_streams": {
+                    "duration": TRANSPORT_STREAM,
+                    "identity": (
+                        "lot_id+route_id+from_step+to_step+"
+                        "from_location+to_location+visit_index"
+                    ),
                 },
             },
             dispatch_policy=self.policy.name,
@@ -697,6 +804,9 @@ class Simulator:
             pm_count=sum(machine.pm_count for machine in self._machines.values()),
             total_pm_downtime=sum(item.pm_downtime for item in machine_statistics.values()),
             random_sample_ledger=self.random_streams.ledger,
+            transport_intervals=tuple(self._transport_intervals),
+            active_transports=active_transports,
+            transport_metrics=transport_metrics,
         )
 
     def query_cqt_state(
@@ -837,6 +947,8 @@ class Simulator:
             self._handle_pm_start(event)
         elif event.event_type is EventType.PM_FINISH:
             self._handle_pm_finish(event)
+        elif event.event_type is EventType.TRANSPORT_ARRIVE:
+            self._handle_transport_arrive(event)
         else:
             raise SimulationError(f"尚未实现事件类型：{event.event_type}")
 
@@ -878,6 +990,77 @@ class Simulator:
                     state_before="HISTORICAL_BINDING:UNKNOWN",
                     state_after="QUALIFICATION_ONLY",
                 )
+        self._ensure_dispatch_barrier()
+
+    def _handle_transport_arrive(self, event: Event) -> None:
+        lot = self._lots[event.entity_id]
+        operation_index = event.payload["operation_index"]
+        if (
+            lot.status is not LotStatus.TRANSPORTING
+            or lot.operation_index != operation_index
+        ):
+            self._record(
+                event_type="TRANSPORT_ARRIVE_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=lot.spec.operations[operation_index],
+                state_before="STALE_TRANSPORT",
+                state_after="NO_EFFECT",
+                transport_from_location=event.payload["from_location"],
+                transport_to_location=event.payload["to_location"],
+                transport_duration=event.payload["duration"],
+                transport_missing_pair=False,
+            )
+            return
+        operation = lot.spec.operations[operation_index]
+        active = self._active_transports.pop(lot.spec.lot_id, None)
+        if active is None:
+            raise SimulationError(
+                f"TRANSPORT_ARRIVE 缺少 active transport：{lot.spec.lot_id}"
+            )
+        self._transport_intervals.append(
+            TransportInterval(
+                active.lot_id,
+                active.route_id,
+                active.from_step_id,
+                active.to_step_id,
+                active.from_location,
+                active.to_location,
+                active.start,
+                self.current_time,
+                active.duration,
+                False,
+            )
+        )
+        lot.status = LotStatus.QUEUED
+        lot.queue_entered_at = self.current_time
+        self._record(
+            event_type="TRANSPORT_ARRIVE",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            state_before=LotStatus.TRANSPORTING.value,
+            state_after=LotStatus.QUEUED.value,
+            transport_from_location=event.payload["from_location"],
+            transport_to_location=event.payload["to_location"],
+            transport_duration=event.payload["duration"],
+            transport_missing_pair=False,
+        )
+        self._record(
+            event_type="ROUTE_ADVANCE",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            state_before=LotStatus.TRANSPORTING.value,
+            state_after=LotStatus.QUEUED.value,
+            transport_from_location=event.payload["from_location"],
+            transport_to_location=event.payload["to_location"],
+            transport_duration=event.payload["duration"],
+            transport_missing_pair=False,
+        )
         self._ensure_dispatch_barrier()
 
     def _handle_failure_start(self, event: Event) -> None:
@@ -2091,6 +2274,7 @@ class Simulator:
             cause_event_seq=event.seq,
             lot=lot,
             completed_operation=operation,
+            source_machine_id=machine_id,
         )
         self._account_completed_wafers(
             event=event,
@@ -2220,6 +2404,7 @@ class Simulator:
                 lot=lot,
                 completed_operation=operation,
                 batch_id=batch_id,
+                source_machine_id=active.machine_id,
             )
         self._account_completed_wafers(
             event=event,
@@ -2273,6 +2458,7 @@ class Simulator:
         lot: _LotRuntime,
         completed_operation: Any,
         batch_id: str | None = None,
+        source_machine_id: str | None = None,
     ) -> None:
         lot.current_machine_id = None
         lot.operation_index += 1
@@ -2298,6 +2484,91 @@ class Simulator:
                 eligible_machines=next_operation.eligible_machines,
                 visit_index=0,
             )
+            if self._transport_resolver.enabled:
+                if source_machine_id is None:
+                    raise SimulationError("transport route advance 缺少 source machine")
+                self._start_transport(
+                    priority=priority,
+                    cause_event_seq=cause_event_seq,
+                    lot=lot,
+                    completed_operation=completed_operation,
+                    next_operation=next_operation,
+                    source_machine_id=source_machine_id,
+                    batch_id=batch_id,
+                )
+            else:
+                lot.status = LotStatus.QUEUED
+                lot.queue_entered_at = self.current_time
+                self._record(
+                    event_type="ROUTE_ADVANCE",
+                    priority=priority,
+                    cause_event_seq=cause_event_seq,
+                    lot=lot,
+                    operation=next_operation,
+                    batch_id=batch_id,
+                    state_before="PROCESSED",
+                    state_after=LotStatus.QUEUED.value,
+                )
+
+    def _start_transport(
+        self,
+        *,
+        priority: int,
+        cause_event_seq: int,
+        lot: _LotRuntime,
+        completed_operation: Any,
+        next_operation: Any,
+        source_machine_id: str,
+        batch_id: str | None,
+    ) -> None:
+        source_machine = self._machines[source_machine_id]
+        from_location = source_machine.location_id
+        if not from_location:
+            raise SimulationError(
+                f"transport source machine 缺少 location_id：{source_machine_id}"
+            )
+        target_locations = {
+            self._machines[machine_id].location_id
+            for machine_id in next_operation.eligible_machines
+        }
+        if len(target_locations) != 1 or None in target_locations:
+            raise SimulationError(
+                f"目标工序 location 不唯一：{lot.spec.lot_id}/step "
+                f"{next_operation.step_id}"
+            )
+        to_location = next(iter(target_locations))
+        resolution = self._transport_resolver.resolve(from_location, to_location)
+        if resolution.missing_pair:
+            duration = 0.0
+            self._transport_intervals.append(
+                TransportInterval(
+                    lot.spec.lot_id,
+                    next_operation.route_id,
+                    completed_operation.step_id,
+                    next_operation.step_id,
+                    from_location,
+                    to_location,
+                    self.current_time,
+                    self.current_time,
+                    duration,
+                    True,
+                )
+            )
+            self._record(
+                event_type="TRANSPORT_MISSING",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=next_operation,
+                batch_id=batch_id,
+                machine_id=source_machine_id,
+                state_before="PROCESSED",
+                state_after="PROCESSED",
+                transport_from_location=from_location,
+                transport_to_location=to_location,
+                transport_duration=duration,
+                transport_missing_pair=True,
+            )
             lot.status = LotStatus.QUEUED
             lot.queue_entered_at = self.current_time
             self._record(
@@ -2309,7 +2580,62 @@ class Simulator:
                 batch_id=batch_id,
                 state_before="PROCESSED",
                 state_after=LotStatus.QUEUED.value,
+                transport_from_location=from_location,
+                transport_to_location=to_location,
+                transport_duration=duration,
+                transport_missing_pair=True,
             )
+            return
+        duration, entity_id = self._transport_resolver.sample(
+            resolution,
+            lot_id=lot.spec.lot_id,
+            route_id=next_operation.route_id,
+            from_step_id=completed_operation.step_id,
+            to_step_id=next_operation.step_id,
+            visit_index=0,
+            random_source=self.random_streams,
+        )
+        finish = self.current_time + duration
+        self._active_transports[lot.spec.lot_id] = _ActiveTransport(
+            lot.spec.lot_id,
+            next_operation.route_id,
+            completed_operation.step_id,
+            next_operation.step_id,
+            from_location,
+            to_location,
+            self.current_time,
+            finish,
+            duration,
+        )
+        lot.status = LotStatus.TRANSPORTING
+        self._record(
+            event_type="TRANSPORT_START",
+            priority=priority,
+            cause_event_seq=cause_event_seq,
+            lot=lot,
+            operation=next_operation,
+            batch_id=batch_id,
+            machine_id=source_machine_id,
+            state_before="PROCESSED",
+            state_after=LotStatus.TRANSPORTING.value,
+            transport_from_location=from_location,
+            transport_to_location=to_location,
+            transport_duration=duration,
+            transport_missing_pair=False,
+        )
+        self._schedule(
+            time=finish,
+            event_type=EventType.TRANSPORT_ARRIVE,
+            entity_id=lot.spec.lot_id,
+            payload={
+                "lot_id": lot.spec.lot_id,
+                "operation_index": lot.operation_index,
+                "from_location": from_location,
+                "to_location": to_location,
+                "duration": duration,
+                "entity_id": entity_id,
+            },
+        )
 
     def _ensure_dispatch_barrier(self) -> None:
         if self.current_time in self._pending_dispatch_barriers:
@@ -2534,6 +2860,10 @@ class Simulator:
         wafer_counter_after: int | None = None,
         wafer_threshold: int | None = None,
         processed_wafers: int | None = None,
+        transport_from_location: str | None = None,
+        transport_to_location: str | None = None,
+        transport_duration: float | None = None,
+        transport_missing_pair: bool | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -2593,6 +2923,10 @@ class Simulator:
             wafer_counter_after=wafer_counter_after,
             wafer_threshold=wafer_threshold,
             processed_wafers=processed_wafers,
+            transport_from_location=transport_from_location,
+            transport_to_location=transport_to_location,
+            transport_duration=transport_duration,
+            transport_missing_pair=transport_missing_pair,
             state_before=state_before,
             state_after=state_after,
             cause_event_seq=cause_event_seq,
@@ -2648,6 +2982,48 @@ class Simulator:
                 and lot.spec.due_time is not None
             ),
             mean_wip=self._mean_wip(end_time),
+        )
+
+    def _build_transport_metrics(self) -> TransportMetrics:
+        missing: dict[tuple[str, str], int] = {}
+        for interval in self._transport_intervals:
+            if interval.missing_pair:
+                key = (interval.from_location, interval.to_location)
+                missing[key] = missing.get(key, 0) + 1
+        return TransportMetrics(
+            started_count=(
+                len(self._transport_intervals) + len(self._active_transports)
+            ),
+            completed_count=len(self._transport_intervals),
+            active_count=len(self._active_transports),
+            missing_pair_count=sum(missing.values()),
+            total_minutes=sum(item.duration for item in self._transport_intervals),
+            missing_pairs=tuple(
+                (from_location, to_location, count)
+                for (from_location, to_location), count in sorted(missing.items())
+            ),
+        )
+
+    def _build_active_transport_snapshots(
+        self,
+        end_time: float,
+    ) -> tuple[ActiveTransportSnapshot, ...]:
+        return tuple(
+            ActiveTransportSnapshot(
+                item.lot_id,
+                item.route_id,
+                item.from_step_id,
+                item.to_step_id,
+                item.from_location,
+                item.to_location,
+                item.start,
+                item.scheduled_finish,
+                max(0.0, item.scheduled_finish - end_time),
+            )
+            for item in sorted(
+                self._active_transports.values(),
+                key=lambda value: value.lot_id,
+            )
         )
 
     def _mean_wip(self, end_time: float) -> float:

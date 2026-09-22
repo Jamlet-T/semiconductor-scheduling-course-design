@@ -16,6 +16,7 @@ from fab_scheduler.domain.models import (
     ScriptedPMSpec,
     ScriptedFailureSpec,
     TimeDistributionSpec,
+    TransportSpec,
     WaferPMSpec,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "ScriptedPMSpec",
     "ScriptedFailureSpec",
     "TimeDistributionSpec",
+    "TransportSpec",
     "WaferPMSpec",
 ]

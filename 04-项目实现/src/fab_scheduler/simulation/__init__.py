@@ -1,6 +1,7 @@
 """离散事件仿真内核。"""
 
 from fab_scheduler.simulation.engine import (
+    ActiveTransportSnapshot,
     ActiveBatchSnapshot,
     BatchInterval,
     DowntimeInterval,
@@ -9,6 +10,8 @@ from fab_scheduler.simulation.engine import (
     MachineStatistics,
     ProcessingInterval,
     SetupInterval,
+    TransportInterval,
+    TransportMetrics,
     SimulationError,
     SimulationMetrics,
     SimulationResult,
@@ -25,9 +28,16 @@ from fab_scheduler.simulation.dedication import (
     DedicationRecord,
     InitialWipDedicationAudit,
 )
+from fab_scheduler.simulation.transport import (
+    TRANSPORT_RUNTIME_SCHEMA_VERSION,
+    TRANSPORT_STREAM,
+    TransportResolution,
+    TransportResolver,
+)
 
 __all__ = [
     "ActiveBatchSnapshot",
+    "ActiveTransportSnapshot",
     "BatchInterval",
     "DowntimeInterval",
     "MachineFailureSnapshot",
@@ -35,6 +45,8 @@ __all__ = [
     "MachineStatistics",
     "ProcessingInterval",
     "SetupInterval",
+    "TransportInterval",
+    "TransportMetrics",
     "SimulationError",
     "SimulationMetrics",
     "SimulationResult",
@@ -46,4 +58,8 @@ __all__ = [
     "DedicationMetrics",
     "DedicationRecord",
     "InitialWipDedicationAudit",
+    "TransportResolver",
+    "TransportResolution",
+    "TRANSPORT_RUNTIME_SCHEMA_VERSION",
+    "TRANSPORT_STREAM",
 ]

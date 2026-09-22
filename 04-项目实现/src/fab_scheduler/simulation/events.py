@@ -27,6 +27,7 @@ class EventType(str, Enum):
     PROCESS_FINISH = "PROCESS_FINISH"
     BATCH_FINISH = "BATCH_FINISH"
     SETUP_FINISH = "SETUP_FINISH"
+    TRANSPORT_ARRIVE = "TRANSPORT_ARRIVE"
     LOT_RELEASE = "LOT_RELEASE"
     BATCH_TIMEOUT = "BATCH_TIMEOUT"
     DISPATCH_BARRIER = "DISPATCH_BARRIER"
@@ -40,6 +41,7 @@ EVENT_PRIORITIES = {
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
     EventType.BATCH_FINISH: EventPriority.PROCESS_FINISH,
     EventType.SETUP_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.TRANSPORT_ARRIVE: EventPriority.PROCESS_FINISH,
     EventType.LOT_RELEASE: EventPriority.LOT_RELEASE,
     EventType.BATCH_TIMEOUT: EventPriority.MONITOR,
     EventType.DISPATCH_BARRIER: EventPriority.DISPATCH_BARRIER,
@@ -107,6 +109,10 @@ class TraceRecord:
     pm_trigger_type: str | None = None
     pm_occurrence_index: int | None = None
     pm_duration: float | None = None
+    transport_from_location: str | None = None
+    transport_to_location: str | None = None
+    transport_duration: float | None = None
+    transport_missing_pair: bool | None = None
     wafer_counter_before: int | None = None
     wafer_counter_after: int | None = None
     wafer_threshold: int | None = None

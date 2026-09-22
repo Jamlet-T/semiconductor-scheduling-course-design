@@ -19,11 +19,12 @@ from fab_scheduler.domain.models import (
     Scenario,
     SourceFileProvenance,
     TimeDistributionSpec,
+    TransportSpec,
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.1"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.1"
+SMT2020_LOADER_VERSION = "0.1.2"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.2"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -99,6 +100,7 @@ class OperationDefinition:
     sample_percent: float | None
     rework_step_id: int | None
     rework_percent: float | None
+    rework_scope: str | None
     cqt_target_step_id: int | None
     cqt_limit_minutes: float | None
     dedication_target_step_id: int | None
@@ -193,19 +195,41 @@ class SMT2020StaticModel:
 
 @dataclass(frozen=True, slots=True)
 class LoaderConfig:
-    mode: Literal["audit", "validation_slice"] = "audit"
+    mode: Literal["audit", "validation_slice", "transport_validation_slice"] = "audit"
     validation_product_id: str | None = None
+    validation_transport_pair: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in {"audit", "validation_slice"}:
+        if self.mode not in {"audit", "validation_slice", "transport_validation_slice"}:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
-        if self.mode == "audit" and self.validation_product_id is not None:
-            raise ValueError("audit mode 不接受 validation_product_id")
+        if self.mode == "audit" and (
+            self.validation_product_id is not None
+            or self.validation_transport_pair is not None
+        ):
+            raise ValueError("audit mode 不接受 validation selector")
+        if (
+            self.validation_transport_pair is not None
+            and self.mode != "transport_validation_slice"
+        ):
+            raise ValueError(
+                "validation_transport_pair 仅适用于 transport_validation_slice"
+            )
+        if self.validation_transport_pair is not None:
+            if len(self.validation_transport_pair) != 2:
+                raise ValueError("validation_transport_pair 必须包含两个 location")
+            if any(not location for location in self.validation_transport_pair):
+                raise ValueError("validation_transport_pair 的 location 不能为空")
 
     def provenance_items(self) -> tuple[tuple[str, str], ...]:
         return (
             ("mode", self.mode),
             ("validation_product_id", self.validation_product_id or ""),
+            (
+                "validation_transport_pair",
+                "->".join(self.validation_transport_pair)
+                if self.validation_transport_pair is not None
+                else "",
+            ),
         )
 
 
@@ -409,6 +433,68 @@ def load_smt2020(
             except ValueError as exc:
                 note("ERROR", "DI_INVALID_PROCESSING_DISTRIBUTION", str(exc), route=product.route_id, step=step)
                 continue
+            sample_raw = row["StepPercent"].strip()
+            sample_percent: float | None = None
+            if sample_raw:
+                try:
+                    sample_percent = float(sample_raw)
+                except ValueError:
+                    note(
+                        "ERROR", "DI_INVALID_SAMPLING_PERCENT",
+                        "StepPercent 必须是数字", route=product.route_id,
+                        step=step, value=sample_raw,
+                    )
+                else:
+                    if not 0 < sample_percent <= 100:
+                        note(
+                            "ERROR", "DI_INVALID_SAMPLING_PERCENT",
+                            "StepPercent 必须位于 (0,100]", route=product.route_id,
+                            step=step, value=sample_raw,
+                        )
+
+            rework_values = tuple(row[field].strip() for field in ("RWKSTEP", "REWORK", "RWKTYPE"))
+            rework_present = sum(bool(value) for value in rework_values)
+            if rework_present not in (0, 3):
+                note(
+                    "ERROR", "DI_INCOMPLETE_REWORK_FIELDS",
+                    "RWKSTEP/REWORK/RWKTYPE 必须成组出现", route=product.route_id,
+                    step=step,
+                )
+            rework_step_id: int | None = None
+            rework_percent: float | None = None
+            rework_scope: str | None = None
+            if rework_present == 3:
+                try:
+                    rework_step_id = _int(rework_values[0])
+                except ValueError:
+                    note(
+                        "ERROR", "DI_INVALID_REWORK_STEP",
+                        "RWKSTEP 必须是整数", route=product.route_id,
+                        step=step, value=rework_values[0],
+                    )
+                try:
+                    rework_percent = float(rework_values[1])
+                except ValueError:
+                    note(
+                        "ERROR", "DI_INVALID_REWORK_PERCENT",
+                        "REWORK 必须是数字", route=product.route_id,
+                        step=step, value=rework_values[1],
+                    )
+                else:
+                    if not 0 < rework_percent <= 100:
+                        note(
+                            "ERROR", "DI_INVALID_REWORK_PERCENT",
+                            "REWORK 必须位于 (0,100]", route=product.route_id,
+                            step=step, value=rework_values[1],
+                        )
+                rework_scope = rework_values[2].lower()
+                if rework_scope != "lot":
+                    note(
+                        "BLOCKER", "DI_UNSUPPORTED_REWORK_SCOPE",
+                        "当前仅能静态识别 RWKTYPE=lot", route=product.route_id,
+                        step=step, scope=rework_scope,
+                    )
+
             op = OperationDefinition(
                 product.route_id, step, row["DESC"], row["STNFAM"], eligible, processing, row["PTPER"],
                 _int(row["BATCHMN"]) if row["BATCHMN"] else None,
@@ -417,9 +503,10 @@ def load_smt2020(
                 _minutes(row["STIME"], row["STUNITS"]) if row["STIME"] else None,
                 _minutes(row["BatchInterval"], row["BatchIntUnits"]) if row["BatchInterval"] else None,
                 _minutes(row["PartInterval"], row["PartIntUnits"]) if row["PartInterval"] else None,
-                float(row["StepPercent"]) if row["StepPercent"] else None,
-                _int(row["RWKSTEP"]) if row["RWKSTEP"] else None,
-                float(row["REWORK"]) if row["REWORK"] else None,
+                sample_percent,
+                rework_step_id,
+                rework_percent,
+                rework_scope,
                 _int(row["STEP_CQT"]) if row["STEP_CQT"] else None,
                 _minutes(row["CQT"], row["CQTUNITS"]) if row["CQT"] else None,
                 _int(row["FORSTEP"]) if row["SVESTN"].lower() == "yes" else None,
@@ -434,6 +521,15 @@ def load_smt2020(
             for target, code in ((op.cqt_target_step_id, "CQT"), (op.dedication_target_step_id, "DEDICATION")):
                 if target is not None and (target not in known or target <= op.step_id):
                     note("ERROR", f"DI_INVALID_{code}_LINK", "跨步引用无效", route=product.route_id, source=op.step_id, target=target)
+            if op.rework_step_id is not None and (
+                op.rework_step_id not in known or op.rework_step_id >= op.step_id
+            ):
+                note(
+                    "ERROR", "DI_INVALID_REWORK_LINK",
+                    "RWKSTEP 必须引用同一路线中严格早于 source 的工序",
+                    route=product.route_id, source=op.step_id,
+                    target=op.rework_step_id,
+                )
         route = RouteDefinition(product.route_id, product.route_file, tuple(operations))
         routes.append(route)
         route_lookup[product.route_id] = route
@@ -525,13 +621,71 @@ def load_smt2020(
     sample_field_ops = tuple(op for op in operations if op.sample_percent is not None)
     sample_ops = tuple(op for op in operations if op.sample_percent not in (None, 100.0))
     rework_ops = tuple(op for op in operations if op.rework_step_id is not None)
+    rework_scope_counts = {
+        scope: sum(op.rework_scope == scope for op in rework_ops)
+        for scope in sorted({op.rework_scope for op in rework_ops if op.rework_scope is not None})
+    }
     cascading_ops = tuple(op for op in operations if op.batch_interval_minutes is not None or op.part_interval_minutes is not None)
+    location_by_machine = {
+        machine_id: template.location_id
+        for template in machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+
+    def operation_location(operation: OperationDefinition) -> str | None:
+        locations = {
+            location_by_machine[machine_id]
+            for machine_id in operation.eligible_machine_ids
+            if machine_id in location_by_machine
+        }
+        return next(iter(locations)) if len(locations) == 1 else None
+
+    route_location_transition_counts: dict[tuple[str, str], int] = {}
+    ambiguous_location_transitions = 0
+    for route in routes:
+        for first, second in zip(route.operations, route.operations[1:]):
+            from_location = operation_location(first)
+            to_location = operation_location(second)
+            if from_location is None or to_location is None:
+                ambiguous_location_transitions += 1
+                continue
+            key = (from_location, to_location)
+            route_location_transition_counts[key] = (
+                route_location_transition_counts.get(key, 0) + 1
+            )
+    configured_transport_pairs = {
+        (item.from_location, item.to_location) for item in transport
+    }
+    unconfigured_transport_transition_counts = {
+        key: count
+        for key, count in route_location_transition_counts.items()
+        if key not in configured_transport_pairs
+    }
 
     note("INFO", "DI_PROCESSING_DISTRIBUTION_RUNTIME_SUPPORTED", "constant/uniform 已进入统一分钟制 sampler；不再使用均值投影执行 validation slice", affected=len(operations))
     note("INFO", "DI_PROCESSING_BASIS_RUNTIME_SUPPORTED", "per_lot/per_piece/per_batch 已进入 processing duration resolver；Part/BatchInterval 仍单列 blocker", affected=sum(op.processing_basis != "per_lot" for op in operations))
     note("BLOCKER", "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE", "load/unload、STNCAP 与 Part/BatchInterval 尚未执行", affected=len(cascading_ops))
     note("BLOCKER", "DI_UNSUPPORTED_RELEASE_TEMPLATES", "RPT# 重复投放需要按 horizon 惰性生成，当前 Scenario 只接受显式 lot", templates=len(releases))
-    note("BLOCKER", "DI_UNSUPPORTED_TRANSPORT_RUNTIME", "transport 表已解析，但 TRANSPORTING/ARRIVE runtime 尚未实现", pairs=len(transport))
+    note("INFO", "DI_TRANSPORT_RUNTIME_SUPPORTED", "transport 表已解析并由 runtime 支持；缺失 location pair 仍显式审计", pairs=len(transport))
+    if unconfigured_transport_transition_counts:
+        note(
+            "WARNING",
+            "DI_TRANSPORT_ROUTE_PAIRS_UNCONFIGURED",
+            "route 中存在 fromto 表未配置的 location pair；runtime 按契约使用零时长并逐次记录",
+            transitions=sum(unconfigured_transport_transition_counts.values()),
+            pairs={
+                f"{from_location}->{to_location}": count
+                for (from_location, to_location), count
+                in sorted(unconfigured_transport_transition_counts.items())
+            },
+        )
+    if ambiguous_location_transitions:
+        note(
+            "BLOCKER",
+            "DI_AMBIGUOUS_OPERATION_LOCATION",
+            "相邻工序的设备资格不能唯一解析为 location，无法确定 transport pair",
+            transitions=ambiguous_location_transitions,
+        )
     if sample_ops:
         note("BLOCKER", "DI_UNSUPPORTED_SAMPLING", "StepPercent 抽样跳步尚未实现", affected=len(sample_ops))
     if rework_ops:
@@ -572,7 +726,19 @@ def load_smt2020(
         "sampling_field_operations": len(sample_field_ops),
         "stochastic_sampling_operations": len(sample_ops),
         "rework_operations": len(rework_ops),
+        "rework_scope_counts": rework_scope_counts,
         "cascading_operations": len(cascading_ops), "setup_transitions": setup_transition_count,
+        "route_location_transition_counts": {
+            f"{from_location}->{to_location}": count
+            for (from_location, to_location), count
+            in sorted(route_location_transition_counts.items())
+        },
+        "unconfigured_transport_transition_counts": {
+            f"{from_location}->{to_location}": count
+            for (from_location, to_location), count
+            in sorted(unconfigured_transport_transition_counts.items())
+        },
+        "ambiguous_location_transitions": ambiguous_location_transitions,
         "processing_distribution_kinds": {kind: sum(op.processing.kind == kind for op in operations) for kind in sorted({op.processing.kind for op in operations})},
         "processing_basis_counts": {basis: sum(op.processing_basis == basis for op in operations) for basis in sorted({op.processing_basis for op in operations})},
         "failure_calendars": len(down_calendars), "pm_calendars": len(pm_calendars), "calendar_attachments": len(attachments),
@@ -587,11 +753,22 @@ def load_smt2020(
         down_calendars, pm_calendars, tuple(attachments),
     )
 
-    scenario = _build_validation_slice(static_model, manifest, config) if config.mode == "validation_slice" else None
+    if config.mode == "validation_slice":
+        scenario = _build_validation_slice(static_model, manifest, config)
+    elif config.mode == "transport_validation_slice":
+        scenario = _build_transport_validation_slice(static_model, manifest, config)
+    else:
+        scenario = None
     evidence = (
         SemanticEvidence("entity-fields", "A", "raw SMT2020 tables", "字段和值直接读取"),
         SemanticEvidence("qualification", "B", "route.STNFAM + tool.STNFAM/STNQTY", "推导具体物理机资格集合"),
         SemanticEvidence("uniform(m,w)", "D", "PySCFabSim reference implementation", "均值与全宽"),
+        SemanticEvidence(
+            "transport-runtime",
+            "A/B/D/E",
+            "fromto + route/tool locations + Data/Simulation Contract",
+            "外生无容量；未配置 pair 零时长并显式审计",
+        ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
     return LoadedScenario(scenario, static_model, manifest, tuple(audit), evidence, MappingProxyType(stats), config)
@@ -628,5 +805,149 @@ def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest
         machines=(MachineSpec(machine_id),),
         lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id, processing_distribution=distribution, processing_basis=op.processing_basis),), quantity_wafers=25),),
         termination_mode="fixed_horizon", horizon=duration + distribution.width_minutes / 2 + 1,
+        dataset_provenance=provenance,
+    )
+
+
+def _build_transport_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """从真实 route 选取连续且无 route-level blocker 字段的 transport slice。"""
+
+    product_by_route = {item.route_id: item for item in model.products}
+    location_by_machine = {
+        machine_id: template.location_id
+        for template in model.machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+
+    def operation_location(operation: OperationDefinition) -> str | None:
+        locations = {
+            location_by_machine[machine_id]
+            for machine_id in operation.eligible_machine_ids
+            if machine_id in location_by_machine
+        }
+        return next(iter(locations)) if len(locations) == 1 else None
+
+    candidates: list[tuple[RouteDefinition, OperationDefinition, OperationDefinition]] = []
+    requested_pair = config.validation_transport_pair or ("Fab", "Fab")
+    for route in model.routes:
+        product = product_by_route[route.route_id]
+        if config.validation_product_id is not None and product.product_id != config.validation_product_id:
+            continue
+        for first, second in zip(route.operations, route.operations[1:]):
+            if (
+                first.processing_basis == "per_lot"
+                and second.processing_basis == "per_lot"
+                and first.required_setup is None
+                and second.required_setup is None
+                and first.batch_min_wafers is None
+                and second.batch_min_wafers is None
+                and first.sample_percent is None
+                and second.sample_percent is None
+                and first.rework_step_id is None
+                and second.rework_step_id is None
+                and first.cqt_target_step_id is None
+                and second.cqt_target_step_id is None
+                and first.dedication_target_step_id is None
+                and second.dedication_target_step_id is None
+                and first.batch_interval_minutes is None
+                and second.batch_interval_minutes is None
+                and first.part_interval_minutes is None
+                and second.part_interval_minutes is None
+                and operation_location(first) == requested_pair[0]
+                and operation_location(second) == requested_pair[1]
+            ):
+                candidates.append((route, first, second))
+    if not candidates:
+        raise ValueError(
+            "找不到连续 "
+            f"{requested_pair[0]}→{requested_pair[1]} transport validation slice"
+        )
+    route, first, second = sorted(
+        candidates,
+        key=lambda item: (item[0].route_id, item[1].step_id),
+    )[0]
+    product = product_by_route[route.route_id]
+    source_machine = first.eligible_machine_ids[0]
+    target_machine = second.eligible_machine_ids[0]
+    machines_by_id = {
+        machine_id: MachineSpec(
+            machine_id,
+            location_id=location_by_machine[machine_id],
+        )
+        for machine_id in (source_machine, target_machine)
+    }
+    first_distribution = to_runtime_distribution(first.processing)
+    second_distribution = to_runtime_distribution(second.processing)
+    transport_specs = tuple(
+        TransportSpec(
+            item.from_location,
+            item.to_location,
+            to_runtime_distribution(item.duration),
+        )
+        for item in model.transport
+    )
+    transport_upper = max(
+        (
+            item.duration.mean_minutes + item.duration.width_minutes / 2
+            for item in transport_specs
+        ),
+        default=0.0,
+    )
+    horizon = (
+        first_distribution.mean_minutes + first_distribution.width_minutes / 2
+        + second_distribution.mean_minutes + second_distribution.width_minutes / 2
+        + transport_upper + 1
+    )
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        config.provenance_items(),
+        tuple(
+            SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256)
+            for item in manifest.files
+        ),
+    )
+    lot = LotSpec(
+        f"TRANSPORT-VALIDATION-{product.product_id}",
+        0,
+        (
+            OperationSpec(
+                first.step_id,
+                first_distribution.mean_minutes,
+                (source_machine,),
+                route_id=route.route_id,
+                tool_group_id=first.tool_family_id,
+                processing_distribution=first_distribution,
+            ),
+            OperationSpec(
+                second.step_id,
+                second_distribution.mean_minutes,
+                (target_machine,),
+                route_id=route.route_id,
+                tool_group_id=second.tool_family_id,
+                processing_distribution=second_distribution,
+            ),
+        ),
+        quantity_wafers=25,
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:transport-validation-slice:"
+            f"{route.route_id}:{first.step_id}-{second.step_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=tuple(machines_by_id.values()),
+        lots=(lot,),
+        termination_mode="fixed_horizon",
+        horizon=horizon,
+        transport_specs=transport_specs,
         dataset_provenance=provenance,
     )

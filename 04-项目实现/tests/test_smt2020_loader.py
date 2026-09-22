@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import hashlib
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -13,6 +14,7 @@ from fab_scheduler.data import (
     LoaderConfig,
     SMT2020_LOADER_CONTRACT_VERSION,
     build_dataset_manifest,
+    LoaderError,
     load_smt2020,
     parse_distribution,
     to_runtime_distribution,
@@ -70,7 +72,7 @@ class SMT2020LoaderTests(unittest.TestCase):
                 raise AssertionError(f"loader 修改了原始数据：{model}")
 
     def test_public_contract_and_detected_models(self) -> None:
-        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.1")
+        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.2")
         self.assertEqual(set(self.loaded), set(MODELS))
         for model, loaded in self.loaded.items():
             self.assertEqual(loaded.dataset_manifest.model_name, model)
@@ -79,6 +81,16 @@ class SMT2020LoaderTests(unittest.TestCase):
             self.assertIsNone(loaded.scenario)
         with self.assertRaises(ValueError):
             LoaderConfig(mode="audit", validation_product_id="part_3")
+        with self.assertRaises(ValueError):
+            LoaderConfig(
+                mode="validation_slice",
+                validation_transport_pair=("Fab", "Fab"),
+            )
+        with self.assertRaises(ValueError):
+            LoaderConfig(
+                mode="transport_validation_slice",
+                validation_transport_pair=("Fab",),  # type: ignore[arg-type]
+            )
 
     def test_reconciled_entity_counts(self) -> None:
         expected = {
@@ -109,6 +121,10 @@ class SMT2020LoaderTests(unittest.TestCase):
                     if op.dedication_target_step_id is not None:
                         self.assertIn(op.dedication_target_step_id, known)
                         self.assertGreater(op.dedication_target_step_id, op.step_id)
+                    if op.rework_step_id is not None:
+                        self.assertIn(op.rework_step_id, known)
+                        self.assertLess(op.rework_step_id, op.step_id)
+                        self.assertEqual(op.rework_scope, "lot")
 
     def test_setup_batch_cqt_and_dedication_are_actually_mapped(self) -> None:
         expected = {
@@ -127,6 +143,129 @@ class SMT2020LoaderTests(unittest.TestCase):
                         self.assertLessEqual(op.batch_min_wafers, op.batch_max_wafers)
         self.assertEqual(self.loaded["SMT2020_HVLM"].statistics["stochastic_sampling_operations"], 149)
         self.assertEqual(self.loaded["SMT2020_LVHM"].statistics["stochastic_sampling_operations"], 662)
+        self.assertEqual(self.loaded["SMT2020_HVLM"].statistics["rework_scope_counts"], {"lot": 14})
+        self.assertEqual(self.loaded["SMT2020_LVHM"].statistics["rework_scope_counts"], {"lot": 52})
+
+    def test_transport_validation_slice_honors_product_selector(self) -> None:
+        loaded = load_smt2020(
+            DATASETS_ROOT,
+            "SMT2020_HVLM",
+            loader_config=LoaderConfig(
+                mode="transport_validation_slice",
+                validation_product_id="part_4",
+            ),
+        )
+        self.assertIsNotNone(loaded.scenario)
+        assert loaded.scenario is not None
+        self.assertIn(":r_4:", loaded.scenario.scenario_id)
+        self.assertIn(
+            ("validation_product_id", "part_4"),
+            loaded.scenario.dataset_provenance.loader_config,
+        )
+
+        with self.assertRaises(ValueError):
+            load_smt2020(
+                DATASETS_ROOT,
+                "SMT2020_HVLM",
+                loader_config=LoaderConfig(
+                    mode="transport_validation_slice",
+                    validation_product_id="not_a_product",
+                ),
+            )
+
+    def test_real_missing_transport_pair_reaches_runtime_audit(self) -> None:
+        for model in MODELS:
+            loaded = load_smt2020(
+                DATASETS_ROOT,
+                model,
+                loader_config=LoaderConfig(
+                    mode="transport_validation_slice",
+                    validation_transport_pair=("Delay", "Fab"),
+                ),
+            )
+            self.assertIsNotNone(loaded.scenario)
+            assert loaded.scenario is not None
+            result = simulate({"policy_id": "fifo"}, loaded.scenario, 42)
+            self.assertEqual(result.metrics.completed_lots, 1)
+            self.assertEqual(result.transport_metrics.missing_pair_count, 1)
+            self.assertEqual(
+                result.transport_metrics.missing_pairs,
+                (("Delay", "Fab", 1),),
+            )
+            self.assertFalse(
+                [
+                    item
+                    for item in result.random_sample_ledger
+                    if item.stream_name == "transport"
+                ]
+            )
+            self.assertIn(
+                ("validation_transport_pair", "Delay->Fab"),
+                loaded.scenario.dataset_provenance.loader_config,
+            )
+
+    def test_route_semantic_invalid_fields_are_rejected(self) -> None:
+        def load_variant(mutator):
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder) / "datasets"
+                shutil.copytree(DATASETS_ROOT / "SMT2020_HVLM", root / "SMT2020_HVLM")
+                route_path = root / "SMT2020_HVLM" / "route_3.txt"
+                lines = route_path.read_text(encoding="utf-8").splitlines()
+                header = lines[0].split("\t")
+                for index in range(1, len(lines)):
+                    fields = lines[index].split("\t")
+                    if fields[1] == "2":
+                        mutator(dict(zip(header, fields)), fields, header)
+                        lines[index] = "\t".join(fields)
+                        break
+                route_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                return load_smt2020(root, "SMT2020_HVLM")
+
+        invalid_variants = {
+            "sampling_zero": lambda row, fields, header: fields.__setitem__(header.index("StepPercent"), "0"),
+            "sampling_over": lambda row, fields, header: fields.__setitem__(header.index("StepPercent"), "100.1"),
+            "incomplete_rework": lambda row, fields, header: fields.__setitem__(header.index("RWKSTEP"), "1"),
+            "rework_over": lambda row, fields, header: [
+                fields.__setitem__(header.index("RWKSTEP"), "1"),
+                fields.__setitem__(header.index("REWORK"), "100.1"),
+                fields.__setitem__(header.index("RWKTYPE"), "lot"),
+            ],
+            "rework_target_missing": lambda row, fields, header: [
+                fields.__setitem__(header.index("RWKSTEP"), "9999"),
+                fields.__setitem__(header.index("REWORK"), "1"),
+                fields.__setitem__(header.index("RWKTYPE"), "lot"),
+            ],
+            "rework_target_forward": lambda row, fields, header: [
+                fields.__setitem__(header.index("RWKSTEP"), "2"),
+                fields.__setitem__(header.index("REWORK"), "1"),
+                fields.__setitem__(header.index("RWKTYPE"), "lot"),
+            ],
+        }
+        expected_codes = {
+            "sampling_zero": "DI_INVALID_SAMPLING_PERCENT",
+            "sampling_over": "DI_INVALID_SAMPLING_PERCENT",
+            "incomplete_rework": "DI_INCOMPLETE_REWORK_FIELDS",
+            "rework_over": "DI_INVALID_REWORK_PERCENT",
+            "rework_target_missing": "DI_INVALID_REWORK_LINK",
+            "rework_target_forward": "DI_INVALID_REWORK_LINK",
+        }
+        for name, mutator in invalid_variants.items():
+            with self.subTest(name=name):
+                with self.assertRaises(LoaderError) as raised:
+                    load_variant(mutator)
+                self.assertIn(expected_codes[name], {entry.code for entry in raised.exception.entries})
+
+        loaded = load_variant(
+            lambda row, fields, header: [
+                fields.__setitem__(header.index("RWKSTEP"), "1"),
+                fields.__setitem__(header.index("REWORK"), "1"),
+                fields.__setitem__(header.index("RWKTYPE"), "wafer"),
+            ]
+        )
+        self.assertIn(
+            "DI_UNSUPPORTED_REWORK_SCOPE",
+            {entry.code for entry in loaded.loader_audit if entry.severity == "BLOCKER"},
+        )
 
     def test_failure_pm_and_transport_references_are_mapped(self) -> None:
         for loaded in self.loaded.values():
@@ -143,17 +282,57 @@ class SMT2020LoaderTests(unittest.TestCase):
             transport = model.transport[0]
             self.assertEqual((transport.from_location, transport.to_location), ("Fab", "Fab"))
             self.assertEqual((transport.duration.kind, transport.duration.parameter_1_minutes, transport.duration.parameter_2_minutes), ("uniform", 7.5, 2.5))
+            evidence = {item.topic: item for item in loaded.semantic_evidence}
+            self.assertEqual(evidence["transport-runtime"].level, "A/B/D/E")
+            self.assertIn("显式审计", evidence["transport-runtime"].interpretation)
+
+    def test_real_route_location_transitions_and_missing_pairs_are_audited(self) -> None:
+        expected = {
+            "SMT2020_HVLM": {
+                "Fab->Fab": 857,
+                "Fab->Delay": 33,
+                "Delay->Fab": 33,
+                "Delay->Delay": 1,
+            },
+            "SMT2020_LVHM": {
+                "Fab->Fab": 3714,
+                "Fab->Delay": 142,
+                "Delay->Fab": 142,
+                "Delay->Delay": 5,
+            },
+        }
+        for model, counts in expected.items():
+            loaded = self.loaded[model]
+            self.assertEqual(loaded.statistics["route_location_transition_counts"], counts)
+            self.assertEqual(
+                loaded.statistics["unconfigured_transport_transition_counts"],
+                {key: value for key, value in counts.items() if key != "Fab->Fab"},
+            )
+            self.assertEqual(loaded.statistics["ambiguous_location_transitions"], 0)
+            warnings = {
+                item.code: dict(item.context)
+                for item in loaded.loader_audit
+                if item.severity == "WARNING"
+            }
+            self.assertEqual(
+                warnings["DI_TRANSPORT_ROUTE_PAIRS_UNCONFIGURED"]["transitions"],
+                str(sum(value for key, value in counts.items() if key != "Fab->Fab")),
+            )
 
     def test_all_runtime_gaps_are_explicit_blockers(self) -> None:
         required_codes = {
+            "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE",
             "DI_UNSUPPORTED_RELEASE_TEMPLATES",
-            "DI_UNSUPPORTED_TRANSPORT_RUNTIME", "DI_UNSUPPORTED_SAMPLING", "DI_UNSUPPORTED_REWORK",
+            "DI_UNSUPPORTED_SAMPLING", "DI_UNSUPPORTED_REWORK",
             "DI_UNSUPPORTED_SETUP_MINRUN",
+            "DI_MISSING_BATCH_DECISION_CONFIG",
+            "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
         }
         for loaded in self.loaded.values():
             codes = {item.code for item in loaded.loader_audit if item.severity == "BLOCKER"}
-            self.assertTrue(required_codes <= codes)
-            self.assertGreater(loaded.blocker_count, 0)
+            self.assertEqual(codes, required_codes)
+            self.assertEqual(loaded.blocker_count, 7)
+            self.assertNotIn("DI_UNSUPPORTED_TRANSPORT_RUNTIME", codes)
             self.assertEqual(loaded.error_count, 0)
             audit = loaded.audit_to_dict()
             self.assertEqual(audit["blocker_count"], loaded.blocker_count)
