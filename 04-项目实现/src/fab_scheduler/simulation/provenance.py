@@ -8,7 +8,7 @@ import subprocess
 from typing import Any
 
 
-SIMULATION_CONTRACT_VERSION = "0.1.3"
+SIMULATION_CONTRACT_VERSION = "0.1.4"
 
 
 def discover_git_commit() -> str:

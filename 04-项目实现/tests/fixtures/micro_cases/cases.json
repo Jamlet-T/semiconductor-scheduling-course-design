@@ -1,7 +1,7 @@
 {
   "schema_version": "0.1.0",
-  "contract_version": "0.1.3",
-  "event_priority_contract_version": "0.1.3",
+  "contract_version": "0.1.4",
+  "event_priority_contract_version": "0.1.4",
   "time_unit": "minute",
   "status": "mc01_mc08_verified_m1_passed",
   "cases": [

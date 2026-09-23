@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.2` 已完成静态数据链、真实加工/搬运 validation slice，以及 processing、exponential failure 和 transport runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.3` 已完成静态数据链、真实加工/搬运 validation slice 和受限 release validation slice，以及 processing、exponential failure、transport 和 release runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -104,20 +104,22 @@ load/unload 是否计入设备释放时刻按 `STNCAP` 的级联标记处理，�
 
 | 原始文件/字段 | 内部结构 | 运行时语义 | 状态 |
 | --- | --- | --- | --- |
-| `order.LOT` | `ReleaseTemplate.name_prefix` | 重复 lot 使用稳定序号生成唯一 ID | FROZEN-SPEC |
-| `PART` | `ReleaseTemplate.product_id` | 找到产品路线 | FROZEN-SPEC |
+| `order.LOT` | `ReleaseTemplate.name_prefix` | 重复 lot 使用 namespaced stable ID 生成唯一实体 | FROZEN-SPEC |
+| `PART` | `ReleaseTemplate.product_id` | 找到产品路线；同时进入 immutable domain、trace 和 provenance | FROZEN-SPEC |
 | `PIECES` | `Lot.quantity_wafers` | wafer 数；不得与 lot 数混用 | FROZEN-SPEC |
 | `START` | `first_release_datetime` | 相对全局仿真零点得到首个 release | FROZEN-SPEC |
 | `RDIST` | `release_interval.kind` | 当前数据为 `constant` | VERIFIED-DATA |
 | `REPEAT/RUNITS` | `release_interval` | 第 i 个重复 lot 在 `first_release + i*interval` 投放 | FROZEN-SPEC |
-| `RPT#` | `repeat_limit` | 按 horizon 惰性生成，不预展开全部 200000 个 lot | FROZEN-SPEC |
-| `LOTSPERRPT` | `lots_per_repeat` | 每个重复点生成的 lot 数 | FROZEN-SPEC |
+| `RPT#` | `repeat_limit` | 按 horizon 惰性生成，不预展开全部 200000 个 lot；重复 index 包含 0 | FROZEN-SPEC |
+| `LOTSPERRPT` | `lots_per_repeat` | 每个重复点生成的 lot 数；真实支持边界为 `1` | FROZEN-SPEC |
 | `DUE` | `relative_due_offset` | 先计算 `DUE-START`，每个重复 lot 的 due 为自身 release 加该偏移 | FROZEN-SPEC |
-| `PRIOR` | `Lot.priority` | 数值越大优先级越高；纯 FIFO 不读取它 | FROZEN-SPEC |
-| `HOTLOT` | `Lot.hotlot_flag` | 原值保留；本地数据均为 `no`，不得根据 lot 名称猜测 | VERIFIED-DATA |
-| `ORDER` | `Lot.order_id` | 追踪和聚合字段 | FROZEN-SPEC |
+| `PRIOR` | `Lot.priority` | 数值越大优先级越高；策略不得自动读取，纯 FIFO 不读取它 | FROZEN-SPEC |
+| `HOTLOT` | `Lot.hotlot_flag` | 原值保留；本地数据均为 `no`，不得根据 lot 名称猜测；策略不得自动读取 | VERIFIED-DATA |
+| `ORDER` | `Lot.order_id` | 追踪和聚合字段；进入 immutable domain、trace 和 provenance | FROZEN-SPEC |
 
-release 后直接进入首工序等待队列，不添加首工序前搬运。队列入队时刻是 FIFO 的第一排序键，`lot_id` 是稳定 tie-breaker。
+release 后直接进入首工序等待队列，不添加首工序前搬运。队列入队时刻是 FIFO 的第一排序键，`lot_id` 是稳定 tie-breaker。release canonical ID 为 `REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>`；`template_id` 必须包含 model/source-row namespace，`DUE-START` 按每个实际 release 平移。
+
+当前真实支持边界只覆盖 `fixed_horizon + RDIST=constant + RUNITS=min + LOTSPERRPT=1`。raw 中已核实 `START` 全为零、`PIECES=25`、`HOTLOT=no`，但这些观测不等于对其他组合的运行时授权。非 constant RDIST、`LOTSPERRPT>1`、非 fixed-horizon 或其他未证实组合必须显式标记 unsupported/blocker，不得通过预展开或重复名称构造宣称支持。
 
 ## 6. 初始 WIP
 
@@ -257,7 +259,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.3",
+  "simulation_contract_version": "0.1.4",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,
@@ -283,6 +285,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit 和 validation slice 已由 Loader Contract `0.1.2` 实现。完整 raw SMT2020 → executable Scenario 仍因投放、抽样/返工、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运 validation slice 和受限 release validation slice 已由 Loader Contract `0.1.3` 实现。完整 raw SMT2020 → executable Scenario 仍因抽样/返工、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
 
-这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的 7 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
+这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的剩余 6 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。

@@ -13,7 +13,7 @@ from statistics import fmean
 from typing import Any
 from collections.abc import Mapping
 
-from fab_scheduler.domain.models import LotSpec, Scenario
+from fab_scheduler.domain.models import LotSpec, ReleaseTemplateSpec, Scenario
 from fab_scheduler.policies.base import (
     DISPATCH_POLICY_CONTRACT_VERSION,
     DispatchAction,
@@ -76,6 +76,13 @@ from fab_scheduler.simulation.transport import (
     TRANSPORT_RUNTIME_SCHEMA_VERSION,
     TRANSPORT_STREAM,
     TransportResolver,
+)
+from fab_scheduler.simulation.release import (
+    RELEASE_RUNTIME_ID,
+    RELEASE_RUNTIME_SCHEMA_VERSION,
+    materialize_release_lot,
+    release_lot_id,
+    release_time,
 )
 
 
@@ -639,6 +646,10 @@ class Simulator:
             )
             for lot in scenario.lots
         }
+        self._release_templates = {
+            template.template_id: template
+            for template in scenario.release_templates
+        }
         self._machines = {
             machine.machine_id: _MachineRuntime(
                 machine_id=machine.machine_id,
@@ -665,6 +676,13 @@ class Simulator:
                 entity_id=lot.lot_id,
                 payload={"lot_id": lot.lot_id},
             )
+        # 模板只预排第 0 次 occurrence；后续 occurrence 在前一次
+        # LOT_RELEASE 被处理后惰性安排，避免按 repeat_limit 预展开。
+        for template in sorted(
+            self.scenario.release_templates,
+            key=lambda item: (item.template_id, item.lot_prefix),
+        ):
+            self._schedule_release_occurrence(template, repeat_index=0)
 
         if self._calendar:
             self._run_calendar()
@@ -729,6 +747,19 @@ class Simulator:
                         "lot_id+route_id+from_step+to_step+"
                         "from_location+to_location+visit_index"
                     ),
+                },
+                "release_runtime": {
+                    "schema_version": RELEASE_RUNTIME_SCHEMA_VERSION,
+                    "id": RELEASE_RUNTIME_ID,
+                    "randomness": "none_for_constant_interval_profile",
+                    "supported_boundary": {
+                        "termination_mode": "fixed_horizon",
+                        "interval_kind": "constant",
+                        "interval_unit": "normalized_minutes",
+                        "lots_per_repeat": 1,
+                        "lazy_occurrence_materialization": True,
+                        "horizon_is_closed": True,
+                    },
                 },
             },
             dispatch_policy=self.policy.name,
@@ -926,6 +957,37 @@ class Simulator:
             },
         )
 
+    def _schedule_release_occurrence(
+        self,
+        template: ReleaseTemplateSpec,
+        *,
+        repeat_index: int,
+    ) -> None:
+        """安排一个具体模板 occurrence；调用方负责 cap/horizon 边界。"""
+
+        member_index = 0
+        self._schedule(
+            time=release_time(template, repeat_index),
+            event_type=EventType.LOT_RELEASE,
+            entity_id=release_lot_id(
+                template.template_id,
+                template.lot_prefix,
+                repeat_index,
+                member_index,
+            ),
+            payload={
+                "lot_id": release_lot_id(
+                    template.template_id,
+                    template.lot_prefix,
+                    repeat_index,
+                    member_index,
+                ),
+                "template_id": template.template_id,
+                "repeat_index": repeat_index,
+                "member_index": member_index,
+            },
+        )
+
     def _handle(self, event: Event) -> None:
         if event.event_type is EventType.LOT_RELEASE:
             self._handle_release(event)
@@ -953,6 +1015,31 @@ class Simulator:
             raise SimulationError(f"尚未实现事件类型：{event.event_type}")
 
     def _handle_release(self, event: Event) -> None:
+        template_id = event.payload.get("template_id")
+        if template_id is not None:
+            template = self._release_templates[template_id]
+            repeat_index = event.payload["repeat_index"]
+            member_index = event.payload["member_index"]
+            lot_spec = materialize_release_lot(
+                template,
+                repeat_index=repeat_index,
+                member_index=member_index,
+            )
+            if lot_spec.lot_id in self._lots:
+                raise SimulationError(f"release lot 重复创建：{lot_spec.lot_id}")
+            self._lots[lot_spec.lot_id] = _LotRuntime(spec=lot_spec)
+            # 只在当前 occurrence 已经成为真实 release 事件后安排下一次。
+            next_index = repeat_index + 1
+            horizon = self.scenario.horizon
+            if (
+                next_index < template.repeat_limit
+                and horizon is not None
+                and release_time(template, next_index) <= horizon
+            ):
+                self._schedule_release_occurrence(
+                    template,
+                    repeat_index=next_index,
+                )
         lot = self._lots[event.entity_id]
         if lot.status is not LotStatus.UNRELEASED:
             raise SimulationError(f"lot 重复释放：{event.entity_id}")
@@ -2874,6 +2961,24 @@ class Simulator:
             priority=priority,
             event_type=event_type,
             lot_id=lot.spec.lot_id if lot is not None else None,
+            product_id=lot.spec.product_id if lot is not None else None,
+            order_id=lot.spec.order_id if lot is not None else None,
+            hot_lot=lot.spec.hot_lot if lot is not None else None,
+            source_row=lot.spec.source_row if lot is not None else None,
+            lot_due_time=lot.spec.due_time if lot is not None else None,
+            lot_priority=lot.spec.priority if lot is not None else None,
+            lot_quantity_wafers=(
+                lot.spec.quantity_wafers if lot is not None else None
+            ),
+            release_template_id=(
+                lot.spec.release_template_id if lot is not None else None
+            ),
+            release_repeat_index=(
+                lot.spec.release_repeat_index if lot is not None else None
+            ),
+            release_member_index=(
+                lot.spec.release_member_index if lot is not None else None
+            ),
             # MC01-MC04 没有返工，每道工序都是首次 visit。
             # 后续解锁返工时改为按 (lot, step) 独立计数。
             visit_index=0 if lot is not None else None,

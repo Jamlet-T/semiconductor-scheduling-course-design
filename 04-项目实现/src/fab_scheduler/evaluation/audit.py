@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from math import floor
 from statistics import fmean
 from typing import Iterable
 
 from fab_scheduler.domain.models import Scenario
 from fab_scheduler.simulation.engine import SimulationResult
 from fab_scheduler.simulation.events import TraceRecord
+from fab_scheduler.simulation.release import release_lot_id, release_time
+from fab_scheduler.simulation.release import (
+    RELEASE_RUNTIME_ID,
+    RELEASE_RUNTIME_SCHEMA_VERSION,
+)
+from fab_scheduler.simulation.provenance import SIMULATION_CONTRACT_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +104,40 @@ def audit_result_invariants(
     """检查指标重算、lot 守恒、设备时间和机制记录的一致性。"""
 
     violations: list[str] = []
+    if result.provenance.simulation_contract_version != SIMULATION_CONTRACT_VERSION:
+        violations.append("provenance Simulation Contract version 不一致")
+    if result.provenance.termination_condition != scenario.termination_mode:
+        violations.append("provenance termination condition 不一致")
+    if result.provenance.horizon != scenario.horizon:
+        violations.append("provenance horizon 不一致")
+    scenario_config = asdict(scenario)
+    for field, expected in scenario_config.items():
+        if (
+            field not in result.provenance.simulation_config
+            or result.provenance.simulation_config[field] != expected
+        ):
+            violations.append(f"provenance Scenario.{field} 不一致")
+
+    if scenario.release_templates:
+        expected_release_runtime = {
+            "schema_version": RELEASE_RUNTIME_SCHEMA_VERSION,
+            "id": RELEASE_RUNTIME_ID,
+            "randomness": "none_for_constant_interval_profile",
+            "supported_boundary": {
+                "termination_mode": "fixed_horizon",
+                "interval_kind": "constant",
+                "interval_unit": "normalized_minutes",
+                "lots_per_repeat": 1,
+                "lazy_occurrence_materialization": True,
+                "horizon_is_closed": True,
+            },
+        }
+        if (
+            result.provenance.simulation_config.get("release_runtime")
+            != expected_release_runtime
+        ):
+            violations.append("provenance release runtime boundary 不一致")
+
     initial_wip = frozenset(
         lot.lot_id for lot in scenario.lots if lot.is_initial_wip
     )
@@ -152,6 +193,108 @@ def audit_result_invariants(
     ):
         violations.append("lot 守恒不成立")
 
+    templates = {
+        template.template_id: template
+        for template in scenario.release_templates
+    }
+    release_records_by_template: dict[str, list[TraceRecord]] = {
+        template_id: [] for template_id in templates
+    }
+    for record in result.trace:
+        if record.event_type != "LOT_RELEASE" or record.release_template_id is None:
+            continue
+        template = templates.get(record.release_template_id)
+        if template is None:
+            violations.append(
+                f"release trace 引用了未知 template：{record.release_template_id}"
+            )
+            continue
+        release_records_by_template[template.template_id].append(record)
+        repeat_index = record.release_repeat_index
+        member_index = record.release_member_index
+        if repeat_index is None or member_index is None:
+            violations.append(f"{record.lot_id} 缺少 release repeat/member identity")
+            continue
+        expected_id = release_lot_id(
+            template.template_id,
+            template.lot_prefix,
+            repeat_index,
+            member_index,
+        )
+        if record.lot_id != expected_id:
+            violations.append(
+                f"release lot ID 不一致：{record.lot_id} != {expected_id}"
+            )
+        expected_time = release_time(template, repeat_index)
+        if abs(record.sim_time - expected_time) > tolerance:
+            violations.append(
+                f"{record.lot_id} release time 不一致："
+                f"{record.sim_time} != {expected_time}"
+            )
+        expected_due = (
+            expected_time + template.relative_due_minutes
+            if template.relative_due_minutes is not None
+            else None
+        )
+        if expected_due is None:
+            if record.lot_due_time is not None:
+                violations.append(f"{record.lot_id} 不应有 due time")
+        elif (
+            record.lot_due_time is None
+            or abs(record.lot_due_time - expected_due) > tolerance
+        ):
+            violations.append(f"{record.lot_id} due offset 不一致")
+        metadata_pairs = {
+            "product_id": (record.product_id, template.product_id),
+            "order_id": (record.order_id, template.order_id),
+            "hot_lot": (record.hot_lot, template.hot_lot),
+            "source_row": (record.source_row, template.source_row),
+            "priority": (record.lot_priority, template.priority),
+            "quantity_wafers": (
+                record.lot_quantity_wafers,
+                template.quantity_wafers,
+            ),
+        }
+        for field, (actual, expected) in metadata_pairs.items():
+            if actual != expected:
+                violations.append(
+                    f"{record.lot_id} release {field} 不一致："
+                    f"{actual!r} != {expected!r}"
+                )
+
+    if templates:
+        horizon = scenario.horizon
+        if horizon is None:
+            violations.append("release template scenario 缺少 fixed horizon")
+        else:
+            for template_id, template in templates.items():
+                if horizon + tolerance < template.first_release_time:
+                    expected_count = 0
+                else:
+                    expected_count = min(
+                        template.repeat_limit,
+                        floor(
+                            (
+                                horizon
+                                - template.first_release_time
+                                + tolerance
+                            )
+                            / template.interval.mean_minutes
+                        )
+                        + 1,
+                    )
+                records = release_records_by_template[template_id]
+                actual_indices = sorted(
+                    record.release_repeat_index
+                    for record in records
+                    if record.release_repeat_index is not None
+                )
+                if actual_indices != list(range(expected_count)):
+                    violations.append(
+                        f"{template_id} release occurrence 不完整："
+                        f"actual={actual_indices}, expected_count={expected_count}"
+                    )
+
     for machine_id, stats in result.machine_statistics.items():
         accounted = (
             stats.processing_time
@@ -167,8 +310,8 @@ def audit_result_invariants(
 
     batch_specs = {
         (operation.route_id, operation.step_id): operation.batch_spec
-        for lot in scenario.lots
-        for operation in lot.operations
+        for source in scenario.lots + scenario.release_templates
+        for operation in source.operations
         if operation.batch_spec is not None
     }
     for interval in result.batch_intervals:

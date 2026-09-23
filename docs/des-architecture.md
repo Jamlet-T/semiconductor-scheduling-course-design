@@ -1,7 +1,7 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.3`
-当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport；MC01～MC08 保持 verified
+适用版本：Simulation Contract `0.1.4`
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release profile；MC01～MC08 保持 verified
 
 锁定能力：正式 SMT2020 loader、优化器
 
@@ -127,7 +127,7 @@ lot 完成一道工序时：
 ## 4. 终止
 
 - `until_all_complete`：所有场景 lot 完成；事件日历提前耗尽时抛出 `SimulationError`，不返回伪完成结果。
-- `fixed_horizon`：处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP。
+- `fixed_horizon`：按闭区间 `[0,H]` 处理所有 `time <= horizon` 的事件，在 horizon 截断并保留 terminal WIP；SMT2020 release profile 只在此终止模式下声明支持。
 
 MC01～MC08 使用 `until_all_complete` 或算例显式 fixed horizon；独立测试验证 horizon 截断 setup、batch、故障/PM、开放 CQT，以及未完成 target 的活动 Dedication 绑定。
 
@@ -200,5 +200,6 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | Failure | VERIFIED | MC07 显式事件、抢占继续、stale completion 与终态快照 |
 | PM | VERIFIED | MC08 Calendar/Wafer PM、抢占恢复、计数、重叠、同刻优先级与 fixed horizon |
 | Transport | VERIFIED-LIMITED-SLICE | configured/missing pair、CRN、CQT、fixed horizon 与真实 HVLM/LVHM 两工序 slice |
+| SMT2020 release template | VERIFIED-LIMITED-SLICE | fixed-horizon 惰性投放、index-0 `RPT#`、namespaced stable ID、due 平移；仅 constant RDIST + LOTSPERRPT=1 |
 
-MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication 与 Transport 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。M1 状态为 `passed`；Transport blocker 已关闭，但 SMT2020 Data Integration Gate 仍因另外 7 类 gap 为 `not_passed_gaps`，优化器继续禁用。完整结论见 `m1-closure-audit.md` 和 `smt2020-transport-runtime-audit.md`。
+MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport 与 Release Template 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.4` 下全量 182 项测试及 M1/Runtime/MC 定向回归通过，M1 状态为 `passed`；Transport 与 release template blocker 已关闭（release 仅为受限 profile），但 SMT2020 Data Integration Gate 仍因另外 6 类 gap 为 `not_passed_gaps`，优化器继续禁用。完整结论见 `m1-closure-audit.md`、`smt2020-transport-runtime-audit.md` 和 `smt2020-release-runtime-audit.md`。

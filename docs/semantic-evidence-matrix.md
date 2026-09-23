@@ -2,9 +2,9 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.3`
+适用契约：Simulation Contract `0.1.4`
 
-审计日期：2026-09-22
+审计日期：2026-09-23
 
 本文只回答“某项语义的依据来自哪里”。它不把微型场景运行时验证等同于正式 SMT2020 数据接入验证。
 
@@ -25,9 +25,10 @@
 
 | 语义 | 原始字段或对象 | 等级 | 当前冻结解释 | 审计结论 |
 | --- | --- | --- | --- | --- |
-| 动态投放 | `START`、`RDIST`、`REPEAT` | A/B | release 时刻后进入当前工序队列；重复投放需由 loader 保留稳定实体编号 | 已映射 ReleaseTemplate；runtime 惰性生成仍为 blocker |
-| 交期 | `DUE - START` | B | 以 lot 投放为基准换算内部绝对 due time | loader 推导已验证 |
-| 优先级 | 数据中的 priority/hot-lot 信息 | A/B | 保存为 lot 属性，不改变硬可行性 | loader 静态映射已验证 |
+| 动态投放 | `START`、`RDIST`、`REPEAT`、`RPT#`、`LOTSPERRPT` | A/B | release 时刻后进入当前工序队列；重复投放惰性生成，`RPT#` 包含 index 0，稳定 ID 使用 model/source-row namespace | 受限 runtime 支持已形成；仅 `fixed_horizon + constant RDIST + LOTSPERRPT=1` |
+| 交期 | `DUE - START` | B | 以每个 lot 实际投放为基准换算绝对 due time | loader 推导与 release slice 已验证；每个重复 lot 独立平移 |
+| 优先级 | 数据中的 priority/hot-lot 信息 | A/B | 保存为 lot 属性，不改变硬可行性；策略不得自动读取 | loader 静态映射已验证 |
+| Release identity | `model/source row`、`LOT`、`PART`、`ORDER` | A/B | `REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>`；字段进入 immutable domain、trace、provenance | release audit 已冻结 ID/来源要求 |
 | 设备资格 | `STNFAM`、`STN`、`STNQTY` | A/B | tool group 展开到稳定物理 machine ID；动作同时满足 qualification | loader 已展开并由真实 validation slice 使用具体物理机 |
 | 加工时间 | `PDIST`、`PTIME`、`PTIME2`、`PTPER` | A | 按字段指定的分布和 per-piece/per-batch 规则计算 | constant/uniform/exponential 与三种 basis 已接入统一 runtime；cascade interval 另列 blocker |
 | `uniform(m,w)` | 分布参数 | D/E | `Uniform[m-w/2, m+w/2]`，第二参数为全宽 | 原始文件不自描述；属于参考实现支持的本地规则 |
@@ -64,13 +65,14 @@
 
 ## 5. Loader 实测更新
 
-Loader Contract `0.1.2` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用测试支持：
+Loader Contract `0.1.3` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
 
 - Product/Route/Operation、STNFAM→具体 machine、Setup transition/group、Batch wafer bounds、CQT、Dedication、Failure/PM calendar/attach、Transport、ReleaseTemplate 和 Initial WIP 已进入 `SMT2020StaticModel`；
 - raw route row 与 parsed operation 逐行 reconciliation，跨文件引用没有 ERROR；
 - `uniform(m,w)` 仍为 D/E，loader 使用它不会把证据升级成 A；
 - initial setup、dedication、CQT 和 wafer-PM counter 仍为 F/E，loader 只输出 warning/count，不恢复虚构历史；
 - processing distribution/PTPER、exponential failure 与外生 transport 已形成 raw→Scenario→runtime→test 闭环；transport 的未配置 pair 在静态 reconciliation 和运行结果中均显式审计；
-- static mapping 不等于完整 runtime closure。release template、sampling/rework、load/unload/cascade、setup MINRUN、batch `B_target/T_max` 与 multi-calendar 仍为 Data Integration BLOCKER。
+- release template 已在受限 profile 关闭 blocker：HVLM 5 个 template/442000 capacity，LVHM 21 个 template/2202000 capacity，raw `START` 全为 0、`RDIST=constant/min`、`LOTSPERRPT=1`、`PIECES=25`、`HOTLOT=no`；非 constant、`LOTSPERRPT>1`、非 fixed-horizon 和未验证组合不宣称支持。
+- static mapping 不等于完整 runtime closure。sampling/rework、load/unload/cascade、setup MINRUN、batch `B_target/T_max` 与 multi-calendar 仍为 Data Integration 的 6 类 blocker。
 
 完整判定见 `smt2020-data-integration-gate.md`。

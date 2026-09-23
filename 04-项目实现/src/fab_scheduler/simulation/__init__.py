@@ -34,6 +34,10 @@ from fab_scheduler.simulation.transport import (
     TransportResolution,
     TransportResolver,
 )
+from fab_scheduler.simulation.release import (
+    RELEASE_RUNTIME_ID,
+    RELEASE_RUNTIME_SCHEMA_VERSION,
+)
 
 __all__ = [
     "ActiveBatchSnapshot",
@@ -62,4 +66,6 @@ __all__ = [
     "TransportResolution",
     "TRANSPORT_RUNTIME_SCHEMA_VERSION",
     "TRANSPORT_STREAM",
+    "RELEASE_RUNTIME_ID",
+    "RELEASE_RUNTIME_SCHEMA_VERSION",
 ]

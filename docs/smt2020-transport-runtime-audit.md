@@ -6,6 +6,8 @@
 
 Simulation Contract：`0.1.3`；Policy Contract：`0.1.1`；Loader Contract：`0.1.2`
 
+状态：截至 2026-09-22 transport 闭环提交的历史审计快照；当前版本与 blocker register 以 `smt2020-data-integration-gate.md` 为准。
+
 ## 1. 结论
 
 `DI_UNSUPPORTED_TRANSPORT_RUNTIME` 已关闭。关闭范围是 Data Contract 已冻结的**外生、无容量 transport**，不是 AMHS/OHT 仿真。raw evidence、location-pair 映射、Scenario、事件运行时、随机账本、真实记录 slice 和回归测试已形成闭环。

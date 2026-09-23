@@ -1,8 +1,8 @@
 # SMT2020 Loader Contract
 
-版本：`0.1.2`
-Loader：`fab_scheduler.data.load_smt2020` / `0.1.2`
-状态：静态数据链已实现；完整可执行 Scenario 尚有 blocker
+版本：`0.1.3`
+Loader：`fab_scheduler.data.load_smt2020` / `0.1.3`
+状态：静态数据链与受限 release validation slice 已形成闭环；完整可执行 Scenario 尚有 blocker
 
 ## 1. 边界
 
@@ -14,7 +14,7 @@ datasets/<model> 原始字节（只读）
 → 可执行 Scenario（仅在 runtime 能完整表达语义时）
 ```
 
-`load_smt2020(dataset_root, model_id, *, loader_config=None) -> LoadedScenario` 不运行策略、不修改原始文件。`LoadedScenario.scenario=None` 表示完整模型不能在不丢语义的情况下交给当前 DES；这不是成功场景的空值替代，而是明确的 Gate 状态。`mode=validation_slice` 和 `mode=transport_validation_slice` 只构造来自真实记录的受限闭包，用于 loader/API/provenance/runtime 兼容性 smoke，不是正式模型。
+`load_smt2020(dataset_root, model_id, *, loader_config=None) -> LoadedScenario` 不运行策略、不修改原始文件。`LoadedScenario.scenario=None` 表示完整模型不能在不丢语义的情况下交给当前 DES；这不是成功场景的空值替代，而是明确的 Gate 状态。`mode=validation_slice`、`mode=transport_validation_slice` 和 `mode=release_validation_slice` 只构造来自真实记录的受限闭包，用于 loader/API/provenance/runtime 兼容性 smoke，不是正式模型。
 
 ## 2. Manifest identity
 
@@ -52,7 +52,7 @@ relative_path + size_bytes + SHA-256
 | `StepPercent` | percent | sampling metadata | 校验 `(0,100]`；runtime 未实现时 BLOCKER | A |
 | `RWKSTEP/REWORK/RWKTYPE` | percent | rework metadata | 三字段成组；比例 `(0,100]`；target 必须是同 route 更早 step；非 `lot` scope 显式 BLOCKER | A+B |
 | `order.START` | datetime | first release offset | 数据最早 START 为零点 | A+B |
-| `RDIST/REPEAT/RUNITS/RPT#/LOTSPERRPT` | min/count | `ReleaseTemplateDefinition` | 不预展开 20 万级模板 | A |
+| `RDIST/REPEAT/RUNITS/RPT#/LOTSPERRPT` | min/count | `ReleaseTemplateDefinition` | 惰性生成；`RPT#` 包含 index 0；canonical ID 使用 model/source-row namespace | A+B |
 | `DUE` | datetime | relative due allowance | `DUE-START`，每个重复 lot 后续以自身 release 平移 | A+B |
 | `PRIOR/HOTLOT/PIECES` | class/bool/wafer | release/WIP fields | HOTLOT 只按字段，不按 lot 名猜测 | A |
 | `WIP.CURSTEP` | step | `InitialWipDefinition` | t=0 在该 step 前等待；必须属于产品 route | A+B |
@@ -79,13 +79,21 @@ Loader 不猜测 initial setup、历史 dedication machine、已开启 CQT 的 s
 
 `LoaderConfig(mode="transport_validation_slice")` 稳定选择同一路线中连续、per-lot、无 setup/batch/CQT/dedication/sampling/rework/cascade route-level 字段的两道真实工序。默认选择 `Fab→Fab`，也可用 `validation_transport_pair=(from_location, to_location)` 定向验证真实未配置 pair。Scenario 保留两道工序的真实加工分布、真实 machine location 与 `fromto` 分布；搬运随机样本仅在前序工序真实完成后生成。当前 raw route 的 location 转移统计及未配置 pair 会写入 statistics/audit，不能因 `fromto` 表只有一行而被忽略。slice 不装配 machine load/unload、calendar attachment、release template 或 initial WIP；这些机制仍按各自 blocker/warning 处理。
 
+`LoaderConfig(mode="release_validation_slice")` 稳定选择一个真实 release template，并保留其 `PART/ORDER/PIECES/PRIOR/HOTLOT/START/RDIST/REPEAT/RUNITS/RPT#/LOTSPERRPT/DUE` 原始证据和 source-row namespace。可用 `validation_release_lot_prefix=<raw LOT prefix>` 定向选择模板；selector 值必须进入 provenance，未匹配时返回明确的 validation error。该 slice 只在以下联合边界下构造 fixed-horizon Scenario：`RDIST=constant`、`RUNITS=min`、`LOTSPERRPT=1`；repeat index 从 `0` 开始，合法范围为 `[0, RPT# - 1]`，lot ID 使用：
+
+```text
+REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>
+```
+
+release 为惰性事件生成，`DUE-START` 随每个 release 平移；`ORDER/HOTLOT/PRIOR/PIECES/PART` 与 due offset 进入 immutable domain、trace 和 provenance，但策略不会自动读取 `ORDER/HOTLOT/PRIOR`。该 slice 不代表非 constant RDIST、`LOTSPERRPT>1`、非 fixed-horizon 或其他未验证组合可运行。
+
 该 slice 验证：
 
 ```text
 raw parser → static model → Scenario schema → simulate() → provenance
 ```
 
-这些 slice 不验证完整加工组合、cascade 或性能结论。Loader Contract `0.1.2` 的 transport slice 仅闭合外生无容量搬运；sampling/rework、release template、setup MINRUN、batch 决策配置与 multi-calendar 等 blocker 不因此降低。
+这些 slice 不验证完整加工组合、cascade 或性能结论。Loader Contract `0.1.3` 的 transport slice 仅闭合外生无容量搬运，release slice 仅闭合上述受限 profile；sampling/rework、load/unload/cascade、setup MINRUN、batch 决策配置和 multi-calendar 等 blocker 不因此降低。
 
 ## 7. Error and blocker policy
 
@@ -98,6 +106,7 @@ raw parser → static model → Scenario schema → simulate() → provenance
 
 ## 8. 版本记录
 
+- `0.1.3`：增加 `release_validation_slice`；冻结惰性 release、包含 index 0 的 `RPT#`、model/source-row namespaced stable ID、due offset 平移和 fixed-horizon 闭区间边界；仅对 `constant RDIST + LOTSPERRPT=1` 声明 release 支持，其他组合显式保留为 unsupported/blocker。
 - `0.1.2`：增加 transport validation slice 和 location-pair reconciliation；将已验证的 transport runtime 从 blocker 改为 INFO；增加 StepPercent 范围、RWK 字段组、返工目标与 scope 的严格静态校验。
 - `0.1.1`：接入 processing distribution/PTPER 与 exponential failure runtime。
 

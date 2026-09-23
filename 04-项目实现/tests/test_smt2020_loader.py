@@ -72,7 +72,7 @@ class SMT2020LoaderTests(unittest.TestCase):
                 raise AssertionError(f"loader 修改了原始数据：{model}")
 
     def test_public_contract_and_detected_models(self) -> None:
-        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.2")
+        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.3")
         self.assertEqual(set(self.loaded), set(MODELS))
         for model, loaded in self.loaded.items():
             self.assertEqual(loaded.dataset_manifest.model_name, model)
@@ -322,7 +322,6 @@ class SMT2020LoaderTests(unittest.TestCase):
     def test_all_runtime_gaps_are_explicit_blockers(self) -> None:
         required_codes = {
             "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE",
-            "DI_UNSUPPORTED_RELEASE_TEMPLATES",
             "DI_UNSUPPORTED_SAMPLING", "DI_UNSUPPORTED_REWORK",
             "DI_UNSUPPORTED_SETUP_MINRUN",
             "DI_MISSING_BATCH_DECISION_CONFIG",
@@ -331,7 +330,11 @@ class SMT2020LoaderTests(unittest.TestCase):
         for loaded in self.loaded.values():
             codes = {item.code for item in loaded.loader_audit if item.severity == "BLOCKER"}
             self.assertEqual(codes, required_codes)
-            self.assertEqual(loaded.blocker_count, 7)
+            self.assertEqual(loaded.blocker_count, 6)
+            self.assertIn(
+                "DI_RELEASE_TEMPLATE_RUNTIME_SUPPORTED",
+                {item.code for item in loaded.loader_audit if item.severity == "INFO"},
+            )
             self.assertNotIn("DI_UNSUPPORTED_TRANSPORT_RUNTIME", codes)
             self.assertEqual(loaded.error_count, 0)
             audit = loaded.audit_to_dict()
@@ -373,6 +376,114 @@ class SMT2020LoaderTests(unittest.TestCase):
         self.assertEqual(len(provenance["raw_files"]), len(loaded.dataset_manifest.files))
         self.assertEqual(result.policy_id, "fifo")
         self.assertEqual(len([item for item in result.random_sample_ledger if item.stream_name == "processing"]), 1)
+
+    def test_release_template_fields_and_initial_wip_metadata_are_preserved(self) -> None:
+        loaded = self.loaded["SMT2020_HVLM"]
+        self.assertEqual(
+            loaded.statistics["release_distribution_kinds"],
+            {"constant": 5},
+        )
+        self.assertEqual(loaded.statistics["unsupported_release_templates"], 0)
+        self.assertEqual(loaded.statistics["unsupported_release_unit_count"], 0)
+        self.assertIn(
+            "release-runtime",
+            {item.topic for item in loaded.semantic_evidence},
+        )
+        template = loaded.static_model.release_templates[0]
+        self.assertEqual(
+            (template.lot_prefix, template.order_id, template.source_row,
+             template.repeat_limit, template.lots_per_repeat, template.hot_lot),
+            ("Lot_3", "O_Lot_3", 2, 200000, 1, False),
+        )
+        self.assertEqual(template.quantity_wafers, 25)
+        first_wip = loaded.static_model.initial_wip[0]
+        self.assertEqual(
+            (first_wip.priority, first_wip.order_id, first_wip.hot_lot,
+             first_wip.source_start_minutes, first_wip.source_trace, first_wip.trace),
+            (10, "O_Init_WIP", None, 0.0, None, None),
+        )
+
+    def test_release_validation_slice_is_lazy_and_preserves_metadata(self) -> None:
+        loaded = load_smt2020(
+            DATASETS_ROOT,
+            "SMT2020_HVLM",
+            loader_config=LoaderConfig(mode="release_validation_slice"),
+        )
+        scenario = loaded.scenario
+        assert scenario is not None
+        self.assertEqual(scenario.lots, ())
+        self.assertEqual(len(scenario.release_templates), 1)
+        template = scenario.release_templates[0]
+        self.assertEqual(
+            template.template_id,
+            "SMT2020_HVLM:release-template:0002",
+        )
+        self.assertEqual(template.repeat_limit, 200000)
+        self.assertEqual(template.lots_per_repeat, 1)
+        self.assertEqual(
+            scenario.horizon,
+            template.first_release_time + 2 * template.interval.mean_minutes,
+        )
+        result = simulate({"policy_id": "fifo"}, scenario, 42)
+        releases = [item for item in result.trace if item.event_type == "LOT_RELEASE"]
+        self.assertEqual(len(releases), 3)
+        self.assertEqual(
+            [item.sim_time for item in releases],
+            [template.first_release_time + i * template.interval.mean_minutes for i in range(3)],
+        )
+        self.assertEqual(
+            [item.lot_due_time - item.sim_time for item in releases],
+            [template.relative_due_minutes] * 3,
+        )
+        self.assertEqual({item.product_id for item in releases}, {template.product_id})
+        self.assertEqual({item.order_id for item in releases}, {template.order_id})
+        self.assertEqual({item.lot_priority for item in releases}, {template.priority})
+        self.assertEqual({item.lot_quantity_wafers for item in releases}, {template.quantity_wafers})
+        self.assertEqual({item.hot_lot for item in releases}, {template.hot_lot})
+        self.assertEqual({item.release_template_id for item in releases}, {template.template_id})
+        self.assertEqual({item.source_row for item in releases}, {template.source_row})
+        self.assertEqual(
+            {item.stream_name for item in result.random_sample_ledger},
+            {"processing"},
+        )
+
+    def test_release_selector_is_exact_and_covers_real_templates(self) -> None:
+        expected = ("Lot_3", "HotLot_3", "SuperHotLot_3")
+        for lot_prefix in expected:
+            with self.subTest(model="SMT2020_HVLM", lot_prefix=lot_prefix):
+                loaded = load_smt2020(
+                    DATASETS_ROOT,
+                    "SMT2020_HVLM",
+                    loader_config=LoaderConfig(
+                        mode="release_validation_slice",
+                        validation_release_lot_prefix=lot_prefix,
+                    ),
+                )
+                scenario = loaded.scenario
+                assert scenario is not None
+                self.assertEqual(scenario.release_templates[0].lot_prefix, lot_prefix)
+                self.assertEqual(simulate({"policy_id": "fifo"}, scenario, 42).metrics.released_lots, 3)
+        loaded = load_smt2020(
+            DATASETS_ROOT,
+            "SMT2020_LVHM",
+            loader_config=LoaderConfig(
+                mode="release_validation_slice",
+                validation_release_lot_prefix="Lot_1",
+            ),
+        )
+        assert loaded.scenario is not None
+        self.assertEqual(loaded.scenario.release_templates[0].lot_prefix, "Lot_1")
+        with self.assertRaises(ValueError):
+            LoaderConfig(mode="audit", validation_release_lot_prefix="Lot_3")
+        with self.assertRaises(ValueError):
+            load_smt2020(
+                DATASETS_ROOT,
+                "SMT2020_HVLM",
+                loader_config=LoaderConfig(
+                    mode="release_validation_slice",
+                    validation_release_lot_prefix="not-an-order-template",
+                ),
+            )
 
 
 if __name__ == "__main__":

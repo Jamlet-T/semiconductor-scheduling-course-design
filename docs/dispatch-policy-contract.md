@@ -2,7 +2,7 @@
 
 版本：`0.1.1`
 
-适用范围：M1 deterministic baseline policies。本文定义策略如何比较 Engine 已判定可行的动作，不修改 Simulation Contract `0.1.3` 的物理事件语义。
+适用范围：M1 deterministic baseline policies。本文定义策略如何比较 Engine 已判定可行的动作，不修改 Simulation Contract `0.1.4` 的物理事件语义。
 
 ## 1. 职责边界
 
@@ -98,7 +98,7 @@ $$
 simulate(theta, scenario, seed, *, git_commit=None) -> SimulationResult
 ```
 
-Policy Contract `0.1.0` 的 theta schema：
+Policy Contract `0.1.1` 的 theta schema：
 
 ```json
 {

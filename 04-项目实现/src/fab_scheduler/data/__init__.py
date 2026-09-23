@@ -3,10 +3,12 @@
 from fab_scheduler.data.identity import DatasetIdentity, identify_dataset
 from fab_scheduler.data.manifest import DatasetManifest, ManifestFile, build_dataset_manifest
 from fab_scheduler.data.smt2020_loader import (
+    InitialWipDefinition,
     LoadedScenario,
     LoaderAuditEntry,
     LoaderConfig,
     LoaderError,
+    ReleaseTemplateDefinition,
     SMT2020_LOADER_CONTRACT_VERSION,
     SMT2020_LOADER_VERSION,
     load_smt2020,
@@ -15,8 +17,8 @@ from fab_scheduler.data.smt2020_loader import (
 )
 
 __all__ = [
-    "DatasetIdentity", "DatasetManifest", "LoadedScenario", "LoaderAuditEntry",
+    "DatasetIdentity", "DatasetManifest", "InitialWipDefinition", "LoadedScenario", "LoaderAuditEntry",
     "LoaderConfig", "LoaderError", "ManifestFile", "SMT2020_LOADER_CONTRACT_VERSION",
-    "SMT2020_LOADER_VERSION", "build_dataset_manifest", "identify_dataset",
+    "ReleaseTemplateDefinition", "SMT2020_LOADER_VERSION", "build_dataset_manifest", "identify_dataset",
     "load_smt2020", "parse_distribution", "to_runtime_distribution",
 ]

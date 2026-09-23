@@ -356,6 +356,67 @@ class SetupTransition:
 
 
 @dataclass(frozen=True, slots=True)
+class ReleaseTemplateSpec:
+    """证据受限的、按周期生成 lot 的 release 模板。
+
+    当前 runtime 只支持 fixed-horizon 场景、constant 周期和每次一个 lot。
+    这些边界在模型层显式拒绝，避免 loader 或仿真器静默改变语义。
+    """
+
+    template_id: str
+    source_row: str | int
+    lot_prefix: str
+    product_id: str
+    order_id: str
+    operations: tuple[OperationSpec, ...]
+    first_release_time: float
+    interval: TimeDistributionSpec
+    repeat_limit: int
+    lots_per_repeat: int
+    relative_due_minutes: float | None
+    priority: int
+    hot_lot: bool
+    quantity_wafers: int
+
+    def __post_init__(self) -> None:
+        if not self.template_id:
+            raise ValueError("release template_id 不能为空")
+        if self.source_row == "":
+            raise ValueError("release source_row 不能为空")
+        if not self.lot_prefix:
+            raise ValueError("release lot_prefix 不能为空")
+        if not self.product_id or not self.order_id:
+            raise ValueError("release product_id/order_id 不能为空")
+        if not self.operations:
+            raise ValueError("release operations 不能为空")
+        if not isfinite(self.first_release_time) or self.first_release_time < 0:
+            raise ValueError("release first_release_time 必须为有限非负数")
+        if self.interval.kind != "constant":
+            raise ValueError("release runtime 仅支持 constant interval")
+        if not isinstance(self.repeat_limit, int) or isinstance(self.repeat_limit, bool):
+            raise ValueError("release repeat_limit 必须为整数")
+        if self.repeat_limit <= 0:
+            raise ValueError("release repeat_limit 必须为正")
+        if (
+            not isinstance(self.lots_per_repeat, int)
+            or isinstance(self.lots_per_repeat, bool)
+            or self.lots_per_repeat != 1
+        ):
+            raise ValueError("release runtime 仅支持 lots_per_repeat=1")
+        if self.relative_due_minutes is not None and not isfinite(
+            self.relative_due_minutes
+        ):
+            raise ValueError("release relative_due_minutes 必须为有限数或 None")
+        if not isinstance(self.hot_lot, bool):
+            raise ValueError("release hot_lot 必须为 bool")
+        if self.quantity_wafers <= 0:
+            raise ValueError("release quantity_wafers 必须为正")
+        step_ids = [operation.step_id for operation in self.operations]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("release operations 的 step_id 不能重复")
+
+
+@dataclass(frozen=True, slots=True)
 class LotSpec:
     """动态投放 lot 及其完整路线。"""
 
@@ -367,6 +428,13 @@ class LotSpec:
     priority: int = 0
     is_initial_wip: bool = False
     initial_operation_index: int = 0
+    product_id: str | None = None
+    order_id: str | None = None
+    hot_lot: bool | None = None
+    release_template_id: str | None = None
+    release_repeat_index: int | None = None
+    release_member_index: int | None = None
+    source_row: str | int | None = None
 
     def __post_init__(self) -> None:
         if not self.lot_id:
@@ -377,6 +445,34 @@ class LotSpec:
             raise ValueError("operations 不能为空")
         if self.quantity_wafers <= 0:
             raise ValueError("quantity_wafers 必须为正")
+        if self.product_id == "" or self.order_id == "":
+            raise ValueError("product_id/order_id 不能为空字符串")
+        if self.hot_lot is not None and not isinstance(self.hot_lot, bool):
+            raise ValueError("LotSpec hot_lot 必须为 bool 或 None")
+        release_fields = (
+            self.release_template_id,
+            self.release_repeat_index,
+            self.release_member_index,
+        )
+        if self.release_template_id is None and any(
+            value is not None for value in release_fields[1:]
+        ):
+            raise ValueError("release repeat/member index 必须对应 template_id")
+        if self.release_template_id is not None:
+            if not self.release_template_id:
+                raise ValueError("release_template_id 不能为空")
+            if self.release_repeat_index is None or self.release_member_index is None:
+                raise ValueError("release template lot 必须包含 repeat/member index")
+        for name, value in (
+            ("release_repeat_index", self.release_repeat_index),
+            ("release_member_index", self.release_member_index),
+        ):
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise ValueError(f"{name} 必须为非负整数")
         step_ids = [operation.step_id for operation in self.operations]
         if len(step_ids) != len(set(step_ids)):
             raise ValueError("同一路线的 step_id 不能重复")
@@ -406,6 +502,7 @@ class Scenario:
     wafer_pm_specs: tuple[WaferPMSpec, ...] = ()
     dataset_provenance: DatasetProvenanceSpec | None = None
     transport_specs: tuple[TransportSpec, ...] = ()
+    release_templates: tuple[ReleaseTemplateSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -418,13 +515,28 @@ class Scenario:
             raise ValueError("machine_id 不能重复")
         if len(lot_ids) != len(set(lot_ids)):
             raise ValueError("lot_id 不能重复")
+        template_ids = [template.template_id for template in self.release_templates]
+        if len(template_ids) != len(set(template_ids)):
+            raise ValueError("release template_id 不能重复")
+        if self.release_templates and self.termination_mode != "fixed_horizon":
+            raise ValueError(
+                "release templates 仅支持 termination_mode=fixed_horizon"
+            )
+        for template in self.release_templates:
+            namespace = f"REL::{template.template_id}::"
+            if any(lot_id.startswith(namespace) for lot_id in lot_ids):
+                raise ValueError(
+                    f"显式 lot 占用了 release template 命名空间：{namespace}"
+                )
         known_machines = set(machine_ids)
-        for lot in self.lots:
-            for operation in lot.operations:
+        operation_sources = tuple(self.lots) + tuple(self.release_templates)
+        for source in operation_sources:
+            for operation in source.operations:
                 unknown = set(operation.eligible_machines) - known_machines
                 if unknown:
                     raise ValueError(
-                        f"{lot.lot_id}/step {operation.step_id} 引用了未知设备 {sorted(unknown)}"
+                        f"{getattr(source, 'lot_id', getattr(source, 'template_id', 'release'))}/step "
+                        f"{operation.step_id} 引用了未知设备 {sorted(unknown)}"
                     )
         transport_keys = [
             (item.from_location, item.to_location)
@@ -443,8 +555,8 @@ class Scenario:
                     "配置 transport 时所有 machine 必须有 location_id："
                     f"{missing_locations}"
                 )
-            for lot in self.lots:
-                for operation in lot.operations:
+            for source in operation_sources:
+                for operation in source.operations:
                     locations = {
                         next(
                             machine.location_id
@@ -455,7 +567,8 @@ class Scenario:
                     }
                     if len(locations) != 1:
                         raise ValueError(
-                            f"{lot.lot_id}/step {operation.step_id} 的 eligible machine "
+                            f"{getattr(source, 'lot_id', getattr(source, 'template_id', 'release'))}/step "
+                            f"{operation.step_id} 的 eligible machine "
                             "必须解析为唯一 location"
                         )
         if self.termination_mode == "fixed_horizon":
@@ -476,8 +589,8 @@ class Scenario:
         if len(constraint_ids) != len(set(constraint_ids)):
             raise ValueError("CQT constraint_id 不能重复")
         route_steps: dict[str, set[int]] = {}
-        for lot in self.lots:
-            for operation in lot.operations:
+        for source in operation_sources:
+            for operation in source.operations:
                 route_steps.setdefault(operation.route_id, set()).add(
                     operation.step_id
                 )

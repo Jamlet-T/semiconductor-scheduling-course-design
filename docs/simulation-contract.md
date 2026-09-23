@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.3`
+版本：`0.1.4`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -63,7 +63,7 @@ objective = evaluate(metrics)
 
 | 模块 | 状态 | 契约 |
 | --- | --- | --- |
-| Lot 投放 | FROZEN | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 惰性生成；每个重复 lot 继承 `DUE-START` 的相对交期 |
+| Lot 投放 | FROZEN | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 惰性生成；每个重复 lot 继承 `DUE-START` 的相对交期；SMT2020 真实支持边界见本节后的 release profile |
 | 首工序入队 | FROZEN | release 后直接进入首工序队列；首工序前不增加搬运 |
 | 路线推进 | FROZEN | 工序由 `(route_id, step_id, visit_index)` 唯一标识；只有加工完成事件才能推进实际路线 |
 | 工序完成 | FROZEN | 加工及约定的卸载活动完成后记为完成；随后 lot 进入运输或完成状态 |
@@ -82,6 +82,20 @@ Machine availability: UP ↔ DOWN
 ```
 
 activity 与 availability 正交保存；故障期间保留被中断活动及剩余时长，不通过组合枚举 `DOWN_DURING_*` 状态表达。
+
+### 3.1 SMT2020 release profile
+
+Loader static model 保存 `model_id`、源文件/源行 namespace、`PART`、`ORDER`、`PIECES`、`PRIOR`、`HOTLOT`、`START`、`RDIST`、`REPEAT`、`RUNITS`、`RPT#`、`LOTSPERRPT` 和 `relative_due_offset = DUE - START`。进入 runtime 后，immutable Scenario 保存其 namespaced template identity、归一化分钟制间隔、重复上限、相对交期和实体元数据，provenance 关联 loader 配置与 raw dataset identity；每条 `LOT_RELEASE` trace 保存 template/repeat/member identity、实际 release/due、`PART/ORDER/PIECES/PRIOR/HOTLOT` 和 source row，从而可回溯到 static model，而不是复制整行 raw record。策略不得自动读取 `ORDER`、`HOTLOT` 或 `PRIOR`，除非另有独立、版本化的策略契约明确声明。
+
+release lot 的 canonical ID 固定为：
+
+```text
+REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>
+```
+
+其中 `template_id` 必须包含 model/source-row namespace，不能只使用原始 `LOT` 名称；`RPT#` 是包含 `index=0` 的重复数量边界，故 `repeat_index ∈ [0, RPT# - 1]`。`member_index` 表示该重复点内的成员序号。release 时刻为 `START + repeat_index × interval`，以 SMT2020 十进制文本的数值表示进行确定性组合后再转换为 runtime float，避免 exact-horizon 边界因二进制乘法漂移而漏发；due 时刻为该 lot release 加 `DUE-START`，不得把首个 START 或原始 DUE 作为所有重复 lot 的绝对值复用。
+
+本轮 SMT2020 release runtime 只声明以下联合支持边界：`termination_condition=fixed_horizon`、`RDIST=constant`（`RUNITS=min`）和 `LOTSPERRPT=1`；当前 raw profile 另外观测到 `START` 全为零、`PIECES=25`、`HOTLOT=no`。非 constant `RDIST`、`LOTSPERRPT>1`、非 fixed-horizon 终止，或包含尚未验证的字段组合，必须返回显式 unsupported/blocker，不得通过预展开、重复命名或静默降级宣称支持。
 
 ## 4. Batch
 
@@ -191,7 +205,7 @@ cqt_risk = elapsed_since_source_finish / max_duration
 
 ## 10. 仿真结束和指标
 
-正式对比采用固定观察终点 `H`；不会为了等所有 lot 完成而让不同策略拥有不同仿真时长。微型测试允许显式使用 `until_all_complete`。
+正式对比采用固定观察终点 `H`，观察区间是闭区间 `[0,H]`；不会为了等所有 lot 完成而让不同策略拥有不同仿真时长。`event.time <= H` 的事件（包括恰好位于 `H` 的 release、finish、Failure 和 PM）均生效，`event.time > H` 均不处理。微型测试允许显式使用 `until_all_complete`，但这不扩大 SMT2020 release profile 的支持边界。
 
 | 指标 | 状态 | 精确定义 |
 | --- | --- | --- |
@@ -255,3 +269,7 @@ MC07 实现前补齐了两项会改变事件行为的语义：Batch 按一次物
 ### 0.1.3 修订说明
 
 MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按真实 wafer 数累计；wafer PM 完成后计数归零且余量不结转；每台设备采用单一 active downtime owner；Failure 与 PM 同刻时 Failure 优先，active downtime 期间的日历型 occurrence 无效，而 wafer PM pending 保留到恢复派工前执行。MC01～MC07 的生产、Setup、Batch、CQT、Dedication 与 Failure 金标准语义未改变。
+
+### 0.1.4 修订说明
+
+本版本冻结 SMT2020 release template 的惰性投放、包含 model/source-row namespace 的 stable ID、`RPT#` 包含 index 0、固定 horizon 闭区间事件处理，以及 raw release profile 的联合支持边界。只有 `fixed_horizon + constant RDIST + LOTSPERRPT=1` 可声明真实支持；非 constant、`LOTSPERRPT>1` 或其他未证实组合必须显式拒绝。`ORDER/HOTLOT/PRIOR/PIECES/PART` 与 due offset 进入 immutable domain、trace 和 provenance，策略不自动读取其中的 `ORDER/HOTLOT/PRIOR`。

@@ -1,6 +1,6 @@
 # Metric Contract：M1 指标口径与实现审计
 
-适用版本：Simulation Contract `0.1.3`
+适用版本：Simulation Contract `0.1.4`
 
 审计范围：可信轻量 DES；不代表正式 SMT2020 数据链已接入
 
@@ -11,7 +11,7 @@
 | `until_all_complete` | `end_time` 为全部场景 lot 完成时的仿真时刻；throughput 分母为该 `end_time` |
 | `fixed_horizon` | `end_time=H`；throughput、Mean WIP 和期末暴露分母/评价点均为 `H` |
 
-fixed horizon 处理所有 `event.time <= H` 的事件，只拒绝 `event.time > H`。因此发生在 `H` 的完成、投放、Failure 和 PM 均改变事件计数与 terminal state；从 `H` 才开始的停机对 `[0,H]` 时间积分贡献为 0。
+fixed horizon 的观察区间为闭区间 `[0,H]`，处理所有 `event.time <= H` 的事件，只拒绝 `event.time > H`。因此发生在 `H` 的完成、投放、Failure 和 PM 均改变事件计数与 terminal state；从 `H` 才开始的停机对 `[0,H]` 时间积分贡献为 0。
 
 ## 2. 生产与期末指标
 

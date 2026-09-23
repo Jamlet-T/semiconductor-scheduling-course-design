@@ -23,8 +23,8 @@ from fab_scheduler.domain.models import (
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.2"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.2"
+SMT2020_LOADER_VERSION = "0.1.3"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.3"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -125,6 +125,30 @@ class ReleaseTemplateDefinition:
     lots_per_repeat: int
     relative_due_minutes: float | None
     hot_lot: bool
+    source_row: int
+    order_id: str
+
+    def __post_init__(self) -> None:
+        if not self.lot_prefix:
+            raise ValueError("release lot_prefix 不能为空")
+        if not self.product_id:
+            raise ValueError("release product_id 不能为空")
+        if not self.order_id:
+            raise ValueError("release order_id 不能为空")
+        if self.source_row <= 0:
+            raise ValueError("release source_row 必须为正")
+        if self.repeat_limit <= 0:
+            raise ValueError("release repeat_limit 必须为正")
+        if self.lots_per_repeat <= 0:
+            raise ValueError("release lots_per_repeat 必须为正")
+        if not isinstance(self.hot_lot, bool):
+            raise ValueError("release hot_lot 必须为 bool")
+        if self.quantity_wafers <= 0:
+            raise ValueError("release quantity_wafers 必须为正")
+        if not isfinite(self.first_release_minutes) or self.first_release_minutes < 0:
+            raise ValueError("release first_release_minutes 必须为有限非负数")
+        if self.relative_due_minutes is not None and self.relative_due_minutes < 0:
+            raise ValueError("release relative_due_minutes 不能为负")
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +158,17 @@ class InitialWipDefinition:
     quantity_wafers: int
     current_step_id: int
     due_minutes: float | None
+    priority: int = 0
+    order_id: str = ""
+    hot_lot: bool | None = None
+    source_start_minutes: float | None = None
+    source_trace: str | None = None
+
+    @property
+    def trace(self) -> str | None:
+        """兼容 Data Contract 中的 TRACE/source_metadata 称呼。"""
+
+        return self.source_trace
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,16 +230,18 @@ class SMT2020StaticModel:
 
 @dataclass(frozen=True, slots=True)
 class LoaderConfig:
-    mode: Literal["audit", "validation_slice", "transport_validation_slice"] = "audit"
+    mode: Literal["audit", "validation_slice", "transport_validation_slice", "release_validation_slice"] = "audit"
     validation_product_id: str | None = None
     validation_transport_pair: tuple[str, str] | None = None
+    validation_release_lot_prefix: str | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in {"audit", "validation_slice", "transport_validation_slice"}:
+        if self.mode not in {"audit", "validation_slice", "transport_validation_slice", "release_validation_slice"}:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
         if self.mode == "audit" and (
             self.validation_product_id is not None
             or self.validation_transport_pair is not None
+            or self.validation_release_lot_prefix is not None
         ):
             raise ValueError("audit mode 不接受 validation selector")
         if (
@@ -219,6 +256,14 @@ class LoaderConfig:
                 raise ValueError("validation_transport_pair 必须包含两个 location")
             if any(not location for location in self.validation_transport_pair):
                 raise ValueError("validation_transport_pair 的 location 不能为空")
+        if self.validation_product_id is not None and self.mode not in {
+            "validation_slice", "transport_validation_slice", "release_validation_slice"
+        }:
+            raise ValueError("validation_product_id 仅适用于 validation slice mode")
+        if self.validation_release_lot_prefix is not None and self.mode != "release_validation_slice":
+            raise ValueError("validation_release_lot_prefix 仅适用于 release_validation_slice")
+        if self.validation_release_lot_prefix == "":
+            raise ValueError("validation_release_lot_prefix 不能为空")
 
     def provenance_items(self) -> tuple[tuple[str, str], ...]:
         return (
@@ -230,6 +275,7 @@ class LoaderConfig:
                 if self.validation_transport_pair is not None
                 else "",
             ),
+            ("validation_release_lot_prefix", self.validation_release_lot_prefix or ""),
         )
 
 
@@ -537,19 +583,59 @@ def load_smt2020(
     base_times = [_parse_datetime(row["START"]) for row in order_rows + wip_rows if row["START"]]
     epoch = min(base_times)
     releases: list[ReleaseTemplateDefinition] = []
-    for row in order_rows:
+    release_lots: set[str] = set()
+    release_orders: set[str] = set()
+    for source_row, row in enumerate(order_rows, start=2):
+        lot_prefix = row["LOT"]
+        order_id = row["ORDER"]
+        if lot_prefix in release_lots:
+            note("ERROR", "DI_DUPLICATE_RELEASE_LOT", "order LOT 必须唯一", lot=lot_prefix, source_row=source_row)
+        release_lots.add(lot_prefix)
+        if order_id in release_orders:
+            note("ERROR", "DI_DUPLICATE_RELEASE_ORDER", "order ORDER 必须唯一", order=order_id, source_row=source_row)
+        release_orders.add(order_id)
         if row["PART"] not in product_ids:
-            note("ERROR", "DI_UNKNOWN_RELEASE_PRODUCT", "order 引用未知产品", lot=row["LOT"], product=row["PART"])
-        start = _parse_datetime(row["START"])
-        due = _parse_datetime(row["DUE"]) if row["DUE"] else None
-        releases.append(ReleaseTemplateDefinition(
-            row["LOT"], row["PART"], _int(row["PRIOR"]), _int(row["PIECES"]),
-            (start - epoch).total_seconds() / 60,
-            parse_distribution(row["RDIST"], row["REPEAT"], "", row["RUNITS"]),
-            _int(row["RPT#"]), _int(row["LOTSPERRPT"]),
-            (due - start).total_seconds() / 60 if due else None,
-            row["HOTLOT"].lower() == "yes",
-        ))
+            note("ERROR", "DI_UNKNOWN_RELEASE_PRODUCT", "order 引用未知产品", lot=lot_prefix, product=row["PART"])
+        if row["HOTLOT"].lower() not in {"yes", "no"}:
+            note("ERROR", "DI_INVALID_RELEASE_HOTLOT", "order HOTLOT 仅支持 yes/no", lot=lot_prefix, value=row["HOTLOT"])
+            continue
+        try:
+            repeat_limit = _int(row["RPT#"])
+            lots_per_repeat = _int(row["LOTSPERRPT"])
+        except ValueError as exc:
+            note("ERROR", "DI_INVALID_RELEASE_REPEAT", str(exc), lot=lot_prefix, source_row=source_row)
+            continue
+        if repeat_limit <= 0:
+            note("ERROR", "DI_INVALID_RELEASE_REPEAT", "RPT# 必须为正", lot=lot_prefix, value=repeat_limit)
+        if lots_per_repeat <= 0:
+            note("ERROR", "DI_INVALID_RELEASE_LOTS_PER_REPEAT", "LOTSPERRPT 必须为正", lot=lot_prefix, value=lots_per_repeat)
+        try:
+            start = _parse_datetime(row["START"])
+            due = _parse_datetime(row["DUE"]) if row["DUE"] else None
+            interval = parse_distribution(row["RDIST"], row["REPEAT"], "", row["RUNITS"])
+        except (KeyError, ValueError) as exc:
+            note("ERROR", "DI_INVALID_RELEASE_FIELDS", str(exc), lot=lot_prefix, source_row=source_row)
+            continue
+        relative_due = (due - start).total_seconds() / 60 if due else None
+        if relative_due is not None and relative_due < 0:
+            note("ERROR", "DI_INVALID_RELEASE_DUE", "DUE 必须不早于 START", lot=lot_prefix, source_row=source_row)
+        try:
+            releases.append(ReleaseTemplateDefinition(
+                lot_prefix=lot_prefix,
+                product_id=row["PART"],
+                priority=_int(row["PRIOR"]),
+                quantity_wafers=_int(row["PIECES"]),
+                first_release_minutes=(start - epoch).total_seconds() / 60,
+                interval=interval,
+                repeat_limit=repeat_limit,
+                lots_per_repeat=lots_per_repeat,
+                relative_due_minutes=relative_due,
+                hot_lot=row["HOTLOT"].lower() == "yes",
+                source_row=source_row,
+                order_id=order_id,
+            ))
+        except ValueError as exc:
+            note("ERROR", "DI_INVALID_RELEASE_FIELDS", str(exc), lot=lot_prefix, source_row=source_row)
 
     product_route = {item.product_id: route_lookup.get(item.route_id) for item in products}
     initial_wip: list[InitialWipDefinition] = []
@@ -561,8 +647,21 @@ def load_smt2020(
         if route is None or current not in {op.step_id for op in route.operations}:
             note("ERROR", "DI_INVALID_WIP_STEP", "WIP 当前 step 不在产品 route", lot=row["LOT"], product=row["PART"], step=current)
             continue
+        start = _parse_datetime(row["START"])
         due = _parse_datetime(row["DUE"]) if row["DUE"] else None
-        initial_wip.append(InitialWipDefinition(row["LOT"], row["PART"], _int(row["PIECES"]), current, (due - epoch).total_seconds() / 60 if due else None))
+        hot_lot_raw = row["HOTLOT"].lower()
+        if hot_lot_raw not in {"", "yes", "no"}:
+            note("ERROR", "DI_INVALID_WIP_HOTLOT", "WIP HOTLOT 仅支持 yes/no 或空值", lot=row["LOT"], value=row["HOTLOT"])
+            hot_lot: bool | None = None
+        else:
+            hot_lot = None if not hot_lot_raw else hot_lot_raw == "yes"
+        initial_wip.append(InitialWipDefinition(
+            lot_id=row["LOT"], product_id=row["PART"], quantity_wafers=_int(row["PIECES"]),
+            current_step_id=current, due_minutes=(due - epoch).total_seconds() / 60 if due else None,
+            priority=_int(row["PRIOR"]), order_id=row["ORDER"], hot_lot=hot_lot,
+            source_start_minutes=(start - epoch).total_seconds() / 60,
+            source_trace=row["TRACE"] or None,
+        ))
         unknown_cqt += sum(op.step_id < current <= (op.cqt_target_step_id or -1) for op in route.operations)
         unknown_dedication += sum(op.step_id < current <= (op.dedication_target_step_id or -1) for op in route.operations)
 
@@ -665,7 +764,26 @@ def load_smt2020(
     note("INFO", "DI_PROCESSING_DISTRIBUTION_RUNTIME_SUPPORTED", "constant/uniform 已进入统一分钟制 sampler；不再使用均值投影执行 validation slice", affected=len(operations))
     note("INFO", "DI_PROCESSING_BASIS_RUNTIME_SUPPORTED", "per_lot/per_piece/per_batch 已进入 processing duration resolver；Part/BatchInterval 仍单列 blocker", affected=sum(op.processing_basis != "per_lot" for op in operations))
     note("BLOCKER", "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE", "load/unload、STNCAP 与 Part/BatchInterval 尚未执行", affected=len(cascading_ops))
-    note("BLOCKER", "DI_UNSUPPORTED_RELEASE_TEMPLATES", "RPT# 重复投放需要按 horizon 惰性生成，当前 Scenario 只接受显式 lot", templates=len(releases))
+    unsupported_release_templates = tuple(
+        item for item in releases
+        if (
+            item.interval.kind != "constant"
+            or item.interval.raw_unit != "min"
+            or item.lots_per_repeat != 1
+        )
+    )
+    if not unsupported_release_templates and releases:
+        note(
+            "INFO", "DI_RELEASE_TEMPLATE_RUNTIME_SUPPORTED",
+            "release template 当前均为 constant/min 且 LOTSPERRPT=1；runtime 按 horizon 惰性生成",
+            templates=len(releases),
+        )
+    else:
+        note(
+            "BLOCKER", "DI_UNSUPPORTED_RELEASE_TEMPLATES",
+            "当前 release runtime 仅支持 RDIST=constant、RUNITS=min 且 LOTSPERRPT=1；其他值不得隐式降级",
+            templates=len(unsupported_release_templates),
+        )
     note("INFO", "DI_TRANSPORT_RUNTIME_SUPPORTED", "transport 表已解析并由 runtime 支持；缺失 location pair 仍显式审计", pairs=len(transport))
     if unconfigured_transport_transition_counts:
         note(
@@ -720,6 +838,10 @@ def load_smt2020(
         "tool_table_rows": len(tool_rows), "tool_groups": len(family_machines) - int(virtual_delay_resource_count > 0), "physical_machines": physical_machine_count,
         "virtual_delay_resources": virtual_delay_resource_count,
         "release_templates": len(releases), "configured_future_lot_capacity": sum(item.repeat_limit * item.lots_per_repeat for item in releases),
+        "release_distribution_kinds": {kind: sum(item.interval.kind == kind for item in releases) for kind in sorted({item.interval.kind for item in releases})},
+        "unsupported_release_templates": len(unsupported_release_templates),
+        "unsupported_release_lotsp_per_repeat_count": sum(item.lots_per_repeat != 1 for item in releases),
+        "unsupported_release_unit_count": sum(item.interval.raw_unit != "min" for item in releases),
         "initial_wip_lots": len(initial_wip), "batch_operations": len(batch_ops), "cqt_constraints": len(cqt_ops),
         "cross_step_cqt_constraints": sum((op.cqt_target_step_id or 0) > op.step_id + 1 for op in cqt_ops),
         "dedication_constraints": len(dedication_ops),
@@ -757,6 +879,8 @@ def load_smt2020(
         scenario = _build_validation_slice(static_model, manifest, config)
     elif config.mode == "transport_validation_slice":
         scenario = _build_transport_validation_slice(static_model, manifest, config)
+    elif config.mode == "release_validation_slice":
+        scenario = _build_release_validation_slice(static_model, manifest, config)
     else:
         scenario = None
     evidence = (
@@ -768,6 +892,12 @@ def load_smt2020(
             "A/B/D/E",
             "fromto + route/tool locations + Data/Simulation Contract",
             "外生无容量；未配置 pair 零时长并显式审计",
+        ),
+        SemanticEvidence(
+            "release-runtime",
+            "A/B/D/E",
+            "order + part/route + release runtime reference + local frozen contract",
+            "保留真实模板与 RPT#，仅在 fixed-horizon 下按 constant interval 惰性生成；slice 的 ID 与 horizon 可复现",
         ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
@@ -805,6 +935,118 @@ def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest
         machines=(MachineSpec(machine_id),),
         lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id, processing_distribution=distribution, processing_basis=op.processing_basis),), quantity_wafers=25),),
         termination_mode="fixed_horizon", horizon=duration + distribution.width_minutes / 2 + 1,
+        dataset_provenance=provenance,
+    )
+
+
+def _build_release_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """构造一个真实 release template 的惰性投放 slice。
+
+    该 slice 故意不预展开 lots；真实的 RPT#（通常为 200000）保留在模板中，
+    由 runtime 按 fixed horizon 生成首个、第二个和第三个 release。
+    """
+
+    # 局部导入使旧版领域模型仍可加载静态 audit；只有真正请求该 mode 时才
+    # 要求 ReleaseTemplateSpec 已由领域层提供。
+    from fab_scheduler.domain.models import ReleaseTemplateSpec
+
+    product_by_id = {item.product_id: item for item in model.products}
+    templates = [
+        item for item in model.release_templates
+        if config.validation_product_id is None
+        or item.product_id == config.validation_product_id
+        if config.validation_release_lot_prefix is None
+        or item.lot_prefix == config.validation_release_lot_prefix
+    ]
+    supported_templates = [
+        item for item in templates
+        if (
+            item.interval.kind == "constant"
+            and item.interval.raw_unit == "min"
+            and item.lots_per_repeat == 1
+        )
+    ]
+    if not supported_templates:
+        raise ValueError(
+            "找不到满足 release validation slice 的 constant/min/LPR=1 真实订单模板"
+        )
+    template = sorted(supported_templates, key=lambda item: (item.priority, item.source_row))[0]
+    product = product_by_id.get(template.product_id)
+    if product is None:
+        raise ValueError(f"release template 引用未知产品：{template.product_id}")
+    route = next((item for item in model.routes if item.route_id == product.route_id), None)
+    if route is None:
+        raise ValueError(f"找不到产品 route：{product.route_id}")
+    candidates = [
+        op for op in route.operations
+        if op.processing_basis == "per_lot"
+        and op.required_setup is None
+        and op.batch_min_wafers is None
+        and op.sample_percent is None
+        and op.rework_step_id is None
+        and op.cqt_target_step_id is None
+        and op.dedication_target_step_id is None
+        and op.batch_interval_minutes is None
+        and op.part_interval_minutes is None
+        and op.eligible_machine_ids
+    ]
+    if not candidates:
+        raise ValueError("找不到满足 release validation slice 约束的真实工序")
+    op = sorted(candidates, key=lambda item: item.step_id)[0]
+    machine_id = op.eligible_machine_ids[0]
+    processing = to_runtime_distribution(op.processing)
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        config.provenance_items(),
+        tuple(SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256) for item in manifest.files),
+    )
+    operation = OperationSpec(
+        op.step_id,
+        processing.mean_minutes,
+        (machine_id,),
+        route_id=route.route_id,
+        tool_group_id=op.tool_family_id,
+        processing_distribution=processing,
+        processing_basis=op.processing_basis,
+    )
+    release_template = ReleaseTemplateSpec(
+        template_id=(
+            f"{manifest.model_name}:release-template:{template.source_row:04d}"
+        ),
+        source_row=template.source_row,
+        lot_prefix=template.lot_prefix,
+        product_id=template.product_id,
+        order_id=template.order_id,
+        operations=(operation,),
+        first_release_time=template.first_release_minutes,
+        interval=to_runtime_distribution(template.interval),
+        repeat_limit=template.repeat_limit,
+        lots_per_repeat=template.lots_per_repeat,
+        relative_due_minutes=template.relative_due_minutes,
+        priority=template.priority,
+        hot_lot=template.hot_lot,
+        quantity_wafers=template.quantity_wafers,
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:release-validation-slice:"
+            f"{template.source_row}:{route.route_id}:{op.step_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=(MachineSpec(machine_id),),
+        lots=(),
+        termination_mode="fixed_horizon",
+        horizon=template.first_release_minutes + 2 * template.interval.parameter_1_minutes,
+        release_templates=(release_template,),
         dataset_provenance=provenance,
     )
 

@@ -17,7 +17,7 @@
   ],
   "technical_route": {
     "status": "frozen",
-    "contract_version": "0.1.3",
+    "contract_version": "0.1.4",
     "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,
@@ -33,20 +33,20 @@
     "audited_baseline": "22ddbd998ee1f0a0e3247ce293693cea5ffa9ed6",
     "result": "passed",
     "failed_exit_criteria": [],
-    "runtime_reliability": "passed_for_explicit_scenarios_within_implemented_scope",
+    "runtime_reliability": "passed_for_explicit_scenarios_and_restricted_release_profile",
     "smt2020_data_integration": "not_passed_gaps",
     "next_gate": "smt2020_runtime_compatibility_gap_closure"
   },
   "smt2020_data_integration_gate": {
     "status": "not_passed_gaps",
-    "loader_contract_version": "0.1.2",
-    "loader_version": "0.1.2",
+    "loader_contract_version": "0.1.3",
+    "loader_version": "0.1.3",
     "validated_models": [
       "SMT2020_HVLM",
       "SMT2020_LVHM"
     ],
-    "blocker_count_per_model": 7,
-    "real_data_smoke": "fifo_single_operation_and_transport_validation_slices",
+    "blocker_count_per_model": 6,
+    "real_data_smoke": "fifo_single_operation_transport_and_release_validation_slices",
     "next_gate": "smt2020_runtime_compatibility_gap_closure",
     "formal_experiments_allowed": false,
     "optimizer_training_allowed": false

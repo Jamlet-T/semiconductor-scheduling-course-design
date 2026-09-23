@@ -1,6 +1,6 @@
 # fab-scheduler
 
-这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周。可信轻量 DES 已验证 MC01～MC08，并提供 FIFO/SPT/EDD/CR、统一 DispatchAction、`simulate(theta, scenario, seed)`、RandomSampleLedger/CRN audit、Setup、wafer Batch、CQT、Dedication、Failure、PM、外生无容量 Transport、trace、provenance 与独立审计检查器。重新审计后 M1 E01～E10 全部 PASS。正式 SMT2020 loader 已能只读生成 manifest、静态领域模型、结构化 audit，以及加工和搬运真实数据 validation slice；Data Integration Gate 因真实 release/sampling/rework/cascade/setup MINRUN/batch decision config/multi-calendar 缺口仍为 `not_passed_gaps`。正式数据实验尚未开始，CMA-ES 继续禁用。
+这是半导体制造系统智能调度课程设计的 Python 包。项目周期为 14 周。可信轻量 DES 已验证 MC01～MC08，并提供 FIFO/SPT/EDD/CR、统一 DispatchAction、`simulate(theta, scenario, seed)`、RandomSampleLedger/CRN audit、Setup、wafer Batch、CQT、Dedication、Failure、PM、外生无容量 Transport、受限 SMT2020 Release Template、trace、provenance 与独立审计检查器。重新审计后 M1 E01～E10 全部 PASS。正式 SMT2020 loader 已能只读生成 manifest、静态领域模型、结构化 audit，以及加工、搬运和 release 的真实数据 validation slice；release 仅支持 `fixed_horizon + constant/min + LOTSPERRPT=1`。Data Integration Gate 因真实 sampling/rework/load-unload-cascade/setup MINRUN/batch decision config/multi-calendar 六类缺口仍为 `not_passed_gaps`。正式数据实验尚未开始，CMA-ES 继续禁用。
 
 Loader 公共入口：
 
