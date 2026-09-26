@@ -1,8 +1,56 @@
 {
   "name": "半导体制造系统的智能调度",
-  "phase": "scaffold",
+  "phase": "smt2020_data_integration_gate",
   "duration_weeks": 14,
-  "simulation_implemented": false,
+  "simulation_implemented": true,
+  "simulation_status": "des_mc01_mc08_verified_m1_passed",
+  "m1_status": "passed",
+  "m1_verified_cases": [
+    "MC01_ROUTE_ORDER",
+    "MC02_DYNAMIC_RELEASE_FIFO",
+    "MC03_SEQUENCE_SETUP",
+    "MC04_BATCH_CAPACITY",
+    "MC05_CROSS_STEP_CQT",
+    "MC06_MACHINE_DEDICATION",
+    "MC07_FAILURE_AND_EVENT_BARRIER",
+    "MC08_TERMINAL_EXPOSURE"
+  ],
+  "technical_route": {
+    "status": "frozen",
+    "contract_version": "0.1.5",
+    "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
+    "optimizer": "CMA-ES",
+    "optimizer_enabled": false,
+    "out_of_scope": [
+      "PPO",
+      "GNN",
+      "explicit_AMHS",
+      "facility_layout_optimization",
+      "3D_digital_twin"
+    ]
+  },
+  "m1_closure_audit": {
+    "audited_baseline": "22ddbd998ee1f0a0e3247ce293693cea5ffa9ed6",
+    "result": "passed",
+    "failed_exit_criteria": [],
+    "runtime_reliability": "passed_for_explicit_scenarios_release_and_sampling_decision_profile",
+    "smt2020_data_integration": "not_passed_gaps",
+    "next_gate": "smt2020_runtime_compatibility_gap_closure"
+  },
+  "smt2020_data_integration_gate": {
+    "status": "not_passed_gaps",
+    "loader_contract_version": "0.1.4",
+    "loader_version": "0.1.4",
+    "validated_models": [
+      "SMT2020_HVLM",
+      "SMT2020_LVHM"
+    ],
+    "blocker_count_per_model": 5,
+    "real_data_smoke": "fifo_processing_transport_release_slices_and_sampling_decision_diagnostic",
+    "next_gate": "smt2020_runtime_compatibility_gap_closure",
+    "formal_experiments_allowed": false,
+    "optimizer_training_allowed": false
+  },
   "event_replay": {
     "status": "planned",
     "layout": "2d schematic",

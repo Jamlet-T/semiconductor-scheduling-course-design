@@ -1,1 +1,43 @@
-"""调度领域模型模块占位；当前尚未实现。"""
+"""领域模型。"""
+
+from fab_scheduler.domain.models import (
+    BatchSpec,
+    CalendarPMSpec,
+    CQTSpec,
+    DedicationSpec,
+    DatasetProvenanceSpec,
+    LotSpec,
+    MachineFailureSpec,
+    MachineSpec,
+    OperationSpec,
+    ReleaseTemplateSpec,
+    Scenario,
+    SourceFileProvenance,
+    SetupTransition,
+    ScriptedPMSpec,
+    ScriptedFailureSpec,
+    TimeDistributionSpec,
+    TransportSpec,
+    WaferPMSpec,
+)
+
+__all__ = [
+    "BatchSpec",
+    "CalendarPMSpec",
+    "CQTSpec",
+    "DedicationSpec",
+    "DatasetProvenanceSpec",
+    "LotSpec",
+    "MachineFailureSpec",
+    "MachineSpec",
+    "OperationSpec",
+    "ReleaseTemplateSpec",
+    "Scenario",
+    "SourceFileProvenance",
+    "SetupTransition",
+    "ScriptedPMSpec",
+    "ScriptedFailureSpec",
+    "TimeDistributionSpec",
+    "TransportSpec",
+    "WaferPMSpec",
+]

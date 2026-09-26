@@ -2,13 +2,13 @@
 
 面向 14 周课程设计的小组协作仓库，目标是围绕 SMT2020 数据建立可复现的晶圆厂调度研究与软件原型。
 
-项目入口：[完整实施方案与 14 周安排](03-实施方案/课程设计完整实施方案.md) · [数据结构审计](03-实施方案/数据结构审计.json) · [贡献指南](CONTRIBUTING.md)。
+项目入口：[完整实施方案与 14 周安排](03-实施方案/课程设计完整实施方案.md) · [Simulation Contract](docs/simulation-contract.md) · [Data Contract](docs/data-contract.md) · [M1 验收基线](docs/m1-simulation-reliability-baseline.md) · [M1 Closure Audit](docs/m1-closure-audit.md) · [Metric Contract](docs/metric-contract.md) · [语义证据矩阵](docs/semantic-evidence-matrix.md) · [PySCFabSim 语义审计](docs/pyscfabsim-semantic-diff.md) · [数据结构审计](03-实施方案/数据结构审计.json) · [贡献指南](CONTRIBUTING.md)。
 
 ## 当前状态
 
-**已实现：** Python 3.11+ 的最小可安装脚手架；`python -m fab_scheduler --help` 提供命令帮助，`python -m fab_scheduler info` 报告项目阶段、14 周周期和当前尚未实现仿真的状态。
+**已实现：** Python 3.11+ 的可信轻量 DES、FIFO/SPT/EDD/CR 统一派工接口、显式 Setup、wafer 容量 Batch、跨步 CQT、物理机 Dedication、preemptive-resume Failure、Calendar/Wafer PM、实体索引随机流、RandomSampleLedger、`simulate(theta, scenario, seed)`、provenance、事件 trace 与独立审计检查器。MC01～MC08 已逐事件验证。
 
-**计划中：** 原始数据解析与审计、离散事件仿真、FCFS/SPT/EDD 基准策略、遗传算法调度优化、评价与结果复现，以及一个用于回放仿真事件的二维示意布局。二维布局仅用于展示事件坐标，不影响物流时间，也不代表接入真实设备的数字孪生。当前没有实现仿真引擎、优化算法、事件回放前端或真实设备接入，CLI 不会生成或声称任何实验结果。
+**审计结论：** E06/E07/E10 补齐后已重新执行 M1 Closure Audit，原始 E01～E10 全部 PASS，因此 `M1 = passed`。下一阶段唯一 Gate 是 SMT2020 Data Integration；在此之前不运行 HVLM/LVHM，也不启用 CMA-ES。当前没有正式数据实验结果、事件回放前端或真实设备接入。
 
 ## 数据与教学材料
 
