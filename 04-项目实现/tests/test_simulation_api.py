@@ -45,7 +45,7 @@ class SimulationAPITests(unittest.TestCase):
             self.assertEqual(result.policy_id, policy_id)
             self.assertEqual(result.policy_parameters, {})
             self.assertEqual(result.seed, 42)
-            self.assertEqual(result.contract_version, "0.1.4")
+            self.assertEqual(result.contract_version, "0.1.5")
             self.assertEqual(result.policy_contract_version, "0.1.1")
             self.assertEqual(result.scenario_identity, "SIMULATE_API")
             self.assertEqual(result.termination, "until_all_complete")

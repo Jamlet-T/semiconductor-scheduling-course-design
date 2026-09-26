@@ -58,6 +58,12 @@ from fab_scheduler.simulation.random_streams import (
     EntityRandomStreams,
     RandomSampleRecord,
 )
+from fab_scheduler.simulation.sampling import (
+    SAMPLING_RUNTIME_ID,
+    SAMPLING_RUNTIME_SCHEMA_VERSION,
+    SAMPLING_STREAM,
+    decide_sampling,
+)
 from fab_scheduler.simulation.setup import SetupDurationResolver
 from fab_scheduler.simulation.pm import (
     PM_RUNTIME_SCHEMA_VERSION,
@@ -490,6 +496,8 @@ class SimulationResult:
             "TRANSPORT_START",
             "TRANSPORT_ARRIVE",
             "TRANSPORT_MISSING",
+            "SAMPLING_DECISION",
+            "OPERATION_SKIPPED",
         }
         rows = []
         for record in self.trace:
@@ -570,6 +578,10 @@ class SimulationResult:
                         "transport_to": record.transport_to_location,
                         "transport_duration": record.transport_duration,
                         "transport_missing": record.transport_missing_pair,
+                        "sampling_percent": record.sampling_percent,
+                        "sampling_draw": record.sampling_draw,
+                        "sampling_performed": record.sampling_performed,
+                        "sampling_entity": record.sampling_entity_id,
                     }.items()
                     if value is not None
                 }
@@ -747,6 +759,24 @@ class Simulator:
                         "lot_id+route_id+from_step+to_step+"
                         "from_location+to_location+visit_index"
                     ),
+                },
+                "sampling_runtime": {
+                    "schema_version": SAMPLING_RUNTIME_SCHEMA_VERSION,
+                    "id": SAMPLING_RUNTIME_ID,
+                    "supported_boundary": {
+                        "decision_point": "operation_entry_before_dispatch_and_transport",
+                        "scope": "per_lot",
+                        "explicit_percent_range": "(0,100]",
+                        "unconfigured": "always_perform_without_decision",
+                        "percent_100": "perform_without_random_draw",
+                        "rework_visits": "unsupported_visit_0_only",
+                    },
+                },
+                "sampling_runtime_schema_version": SAMPLING_RUNTIME_SCHEMA_VERSION,
+                "sampling_random_streams": {
+                    "decision": SAMPLING_STREAM,
+                    "identity": "lot_id+route_id+step_id+visit_index",
+                    "draw": "uniform(0,100), draw<=sample_percent",
                 },
                 "release_runtime": {
                     "schema_version": RELEASE_RUNTIME_SCHEMA_VERSION,
@@ -1077,7 +1107,82 @@ class Simulator:
                     state_before="HISTORICAL_BINDING:UNKNOWN",
                     state_after="QUALIFICATION_ONLY",
                 )
+        self._enter_after_release(event=event, lot=lot)
         self._ensure_dispatch_barrier()
+
+    def _record_sampling_decision(
+        self,
+        *,
+        lot: _LotRuntime,
+        operation: Any,
+        decision: Any,
+        priority: int,
+        cause_event_seq: int,
+    ) -> None:
+        self._record(
+            event_type="SAMPLING_DECISION",
+            priority=priority,
+            cause_event_seq=cause_event_seq,
+            lot=lot,
+            operation=operation,
+            sampling_percent=decision.sampling_percent,
+            sampling_draw=decision.draw,
+            sampling_performed=decision.performed,
+            sampling_entity_id=decision.entity_id,
+            state_before="OPERATION:ENTRY",
+            state_after=(
+                "SAMPLING:PERFORM" if decision.performed else "SAMPLING:SKIP"
+            ),
+        )
+
+    def _enter_after_release(self, *, event: Event, lot: _LotRuntime) -> None:
+        """在首工序 release 后判定 sampling，连续跳过仍只停留在当前时刻。"""
+
+        while lot.operation_index < len(lot.spec.operations):
+            operation = lot.spec.operations[lot.operation_index]
+            decision = decide_sampling(
+                operation,
+                lot_id=lot.spec.lot_id,
+                visit_index=0,
+                random_source=self.random_streams,
+            )
+            if decision is None:
+                return
+            self._record_sampling_decision(
+                lot=lot,
+                operation=operation,
+                decision=decision,
+                priority=event.priority,
+                cause_event_seq=event.seq,
+            )
+            if decision.performed:
+                return
+            self._record(
+                event_type="OPERATION_SKIPPED",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=operation,
+                sampling_percent=decision.sampling_percent,
+                sampling_draw=decision.draw,
+                sampling_performed=False,
+                sampling_entity_id=decision.entity_id,
+                state_before="OPERATION:ENTRY",
+                state_after="OPERATION:SKIPPED",
+            )
+            lot.operation_index += 1
+        lot.status = LotStatus.COMPLETED
+        lot.queue_entered_at = None
+        lot.completion_time = self.current_time
+        self._record(
+            event_type="LOT_COMPLETE",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=lot.spec.operations[-1],
+            state_before="ALL_OPERATIONS:SKIPPED",
+            state_after=LotStatus.COMPLETED.value,
+        )
 
     def _handle_transport_arrive(self, event: Event) -> None:
         lot = self._lots[event.entity_id]
@@ -2549,6 +2654,45 @@ class Simulator:
     ) -> None:
         lot.current_machine_id = None
         lot.operation_index += 1
+        while lot.operation_index < len(lot.spec.operations):
+            next_operation = lot.spec.operations[lot.operation_index]
+            decision = decide_sampling(
+                next_operation,
+                lot_id=lot.spec.lot_id,
+                visit_index=0,
+                random_source=self.random_streams,
+            )
+            if decision is None or decision.performed:
+                if decision is not None:
+                    self._record_sampling_decision(
+                        lot=lot,
+                        operation=next_operation,
+                        decision=decision,
+                        priority=priority,
+                        cause_event_seq=cause_event_seq,
+                    )
+                break
+            self._record_sampling_decision(
+                lot=lot,
+                operation=next_operation,
+                decision=decision,
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+            )
+            self._record(
+                event_type="OPERATION_SKIPPED",
+                priority=priority,
+                cause_event_seq=cause_event_seq,
+                lot=lot,
+                operation=next_operation,
+                sampling_percent=decision.sampling_percent,
+                sampling_draw=decision.draw,
+                sampling_performed=False,
+                sampling_entity_id=decision.entity_id,
+                state_before="OPERATION:ENTRY",
+                state_after="OPERATION:SKIPPED",
+            )
+            lot.operation_index += 1
         if lot.operation_index == len(lot.spec.operations):
             lot.status = LotStatus.COMPLETED
             lot.completion_time = self.current_time
@@ -2951,6 +3095,10 @@ class Simulator:
         transport_to_location: str | None = None,
         transport_duration: float | None = None,
         transport_missing_pair: bool | None = None,
+        sampling_percent: float | None = None,
+        sampling_draw: float | None = None,
+        sampling_performed: bool | None = None,
+        sampling_entity_id: str | None = None,
         state_before: str | None = None,
         state_after: str | None = None,
     ) -> None:
@@ -3028,6 +3176,10 @@ class Simulator:
             wafer_counter_after=wafer_counter_after,
             wafer_threshold=wafer_threshold,
             processed_wafers=processed_wafers,
+            sampling_percent=sampling_percent,
+            sampling_draw=sampling_draw,
+            sampling_performed=sampling_performed,
+            sampling_entity_id=sampling_entity_id,
             transport_from_location=transport_from_location,
             transport_to_location=transport_to_location,
             transport_duration=transport_duration,

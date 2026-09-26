@@ -19,6 +19,7 @@ from fab_scheduler.data import (
     parse_distribution,
     to_runtime_distribution,
 )
+from fab_scheduler.evaluation.audit import audit_result_invariants
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -72,7 +73,7 @@ class SMT2020LoaderTests(unittest.TestCase):
                 raise AssertionError(f"loader 修改了原始数据：{model}")
 
     def test_public_contract_and_detected_models(self) -> None:
-        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.3")
+        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.4")
         self.assertEqual(set(self.loaded), set(MODELS))
         for model, loaded in self.loaded.items():
             self.assertEqual(loaded.dataset_manifest.model_name, model)
@@ -322,7 +323,7 @@ class SMT2020LoaderTests(unittest.TestCase):
     def test_all_runtime_gaps_are_explicit_blockers(self) -> None:
         required_codes = {
             "DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE",
-            "DI_UNSUPPORTED_SAMPLING", "DI_UNSUPPORTED_REWORK",
+            "DI_UNSUPPORTED_REWORK",
             "DI_UNSUPPORTED_SETUP_MINRUN",
             "DI_MISSING_BATCH_DECISION_CONFIG",
             "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
@@ -330,7 +331,7 @@ class SMT2020LoaderTests(unittest.TestCase):
         for loaded in self.loaded.values():
             codes = {item.code for item in loaded.loader_audit if item.severity == "BLOCKER"}
             self.assertEqual(codes, required_codes)
-            self.assertEqual(loaded.blocker_count, 6)
+            self.assertEqual(loaded.blocker_count, 5)
             self.assertIn(
                 "DI_RELEASE_TEMPLATE_RUNTIME_SUPPORTED",
                 {item.code for item in loaded.loader_audit if item.severity == "INFO"},
@@ -485,6 +486,241 @@ class SMT2020LoaderTests(unittest.TestCase):
                 ),
             )
 
+    def _real_sampling_selector(self, model: str, *, percent: float | None) -> tuple[str, int]:
+        loaded = self.loaded[model]
+        route_by_product = {item.product_id: item.route_id for item in loaded.static_model.products}
+        operations = {
+            (route.route_id, operation.step_id): operation
+            for route in loaded.static_model.routes
+            for operation in route.operations
+        }
+        cqt_endpoints = {
+            (operation.route_id, step_id)
+            for operation in operations.values()
+            if operation.cqt_target_step_id is not None
+            for step_id in (operation.step_id, operation.cqt_target_step_id)
+        }
+        dedication_endpoints = {
+            (operation.route_id, step_id)
+            for operation in operations.values()
+            if operation.dedication_target_step_id is not None
+            for step_id in (operation.step_id, operation.dedication_target_step_id)
+        }
+        cascading_families = {
+            template.tool_family_id
+            for template in loaded.static_model.machine_templates
+            if template.cascading
+        }
+        candidates = []
+        for wip in loaded.static_model.initial_wip:
+            key = (route_by_product[wip.product_id], wip.current_step_id)
+            operation = operations[key]
+            if (
+                (operation.sample_percent == percent if percent is not None else operation.sample_percent not in (None, 100.0))
+                and operation.rework_step_id is None
+                and key not in cqt_endpoints
+                and key not in dedication_endpoints
+                and operation.tool_family_id not in cascading_families
+            ):
+                candidates.append((key, wip.lot_id))
+        self.assertTrue(candidates)
+        return sorted(candidates, key=lambda item: (item[0], item[1]))[0][0]
+
+    def test_sampling_audit_statistics_and_rework_overlap_are_explicit(self) -> None:
+        expected = {"SMT2020_HVLM": (221, 72, 149, 14, 98), "SMT2020_LVHM": (955, 293, 662, 52, 75)}
+        for model, (explicit, always, stochastic, overlap, initial_wip) in expected.items():
+            loaded = self.loaded[model]
+            self.assertEqual(
+                (
+                    loaded.statistics["sampling_field_operations"],
+                    loaded.statistics["sampling_100_operations"],
+                    loaded.statistics["sampling_stochastic_operations"],
+                    loaded.statistics["sampling_rework_overlap_operations"],
+                    loaded.statistics["initial_wip_at_sampling_count"],
+                ),
+                (explicit, always, stochastic, overlap, initial_wip),
+            )
+            self.assertIn(
+                "DI_SAMPLING_RUNTIME_SUPPORTED",
+                {item.code for item in loaded.loader_audit if item.severity == "INFO"},
+            )
+            self.assertIn(
+                "DI_SAMPLING_REWORK_OVERLAP",
+                {item.code for item in loaded.loader_audit if item.severity == "INFO"},
+            )
+        self.assertEqual(
+            self.loaded["SMT2020_HVLM"].statistics[
+                "sampling_cqt_endpoint_operations"
+            ],
+            4,
+        )
+        self.assertEqual(
+            self.loaded["SMT2020_LVHM"].statistics[
+                "sampling_cqt_endpoint_operations"
+            ],
+            18,
+        )
+        for loaded in self.loaded.values():
+            self.assertEqual(
+                loaded.statistics["sampling_profile_unsupported_operations"], 0
+            )
+            self.assertEqual(
+                loaded.statistics["sampling_stochastic_cqt_endpoint_operations"], 0
+            )
+            operations = tuple(
+                operation
+                for route in loaded.static_model.routes
+                for operation in route.operations
+            )
+            cqt_targets = {
+                (operation.route_id, operation.cqt_target_step_id)
+                for operation in operations
+                if operation.cqt_target_step_id is not None
+            }
+            self.assertTrue(all(
+                operation.sample_percent == 100.0
+                for operation in operations
+                if operation.sample_percent is not None
+                and (operation.route_id, operation.step_id) in cqt_targets
+            ))
+            self.assertEqual(
+                loaded.statistics["sampling_dedication_endpoint_operations"], 0
+            )
+            self.assertEqual(
+                loaded.statistics["sampling_cascading_tool_operations"], 0
+            )
+            self.assertEqual(
+                loaded.statistics["sampling_load_unload_operations"],
+                loaded.statistics["sampling_field_operations"],
+            )
+            self.assertIn(
+                "sampling-runtime",
+                {item.topic for item in loaded.semantic_evidence},
+            )
+
+    def test_sampling_validation_slice_preserves_real_wip_and_sampling_runtime(self) -> None:
+        for model in MODELS:
+            stochastic_selector = self._real_sampling_selector(model, percent=None)
+            stochastic = load_smt2020(
+                DATASETS_ROOT,
+                model,
+                loader_config=LoaderConfig(
+                    mode="sampling_validation_slice",
+                    validation_sampling_operation=stochastic_selector,
+                ),
+            )
+            assert stochastic.scenario is not None
+            lot = stochastic.scenario.lots[0]
+            operation = lot.operations[0]
+            self.assertEqual((operation.route_id, operation.step_id), stochastic_selector)
+            self.assertIsNotNone(operation.sample_percent)
+            assert operation.sample_percent is not None
+            self.assertLess(operation.sample_percent, 100.0)
+            self.assertTrue(lot.is_initial_wip)
+            raw_wip = next(
+                item for item in self.loaded[model].static_model.initial_wip
+                if item.lot_id == lot.lot_id
+            )
+            raw_product = next(
+                item for item in self.loaded[model].static_model.products
+                if item.product_id == raw_wip.product_id
+            )
+            raw_operation = next(
+                item for route in self.loaded[model].static_model.routes
+                for item in route.operations
+                if (item.route_id, item.step_id) == stochastic_selector
+            )
+            self.assertEqual(
+                (
+                    lot.product_id, lot.order_id, lot.priority, lot.hot_lot,
+                    lot.quantity_wafers, lot.due_time, lot.source_row,
+                ),
+                (
+                    raw_wip.product_id, raw_wip.order_id, raw_wip.priority,
+                    raw_wip.hot_lot, raw_wip.quantity_wafers,
+                    raw_wip.due_minutes, raw_wip.source_row,
+                ),
+            )
+            self.assertEqual(raw_product.route_id, stochastic_selector[0])
+            self.assertEqual(operation.sample_percent, raw_operation.sample_percent)
+            self.assertEqual(
+                operation.processing_distribution,
+                to_runtime_distribution(raw_operation.processing),
+            )
+            self.assertIn(
+                "DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD",
+                {item.code for item in stochastic.loader_audit},
+            )
+            slice_config = dict(stochastic.scenario.dataset_provenance.loader_config)
+            self.assertGreater(
+                float(slice_config["sampling_slice_omitted_load_minutes"]), 0
+            )
+            self.assertGreater(
+                float(slice_config["sampling_slice_omitted_unload_minutes"]), 0
+            )
+            self.assertEqual(
+                (stochastic.scenario.dataset_provenance.loader_contract_version,
+                 dict(stochastic.scenario.dataset_provenance.loader_config)["validation_sampling_operation"]),
+                ("0.1.4", f"{stochastic_selector[0]}:{stochastic_selector[1]}"),
+            )
+            result = simulate({"policy_id": "fifo"}, stochastic.scenario, 42)
+            self.assertTrue(
+                audit_result_invariants(result, stochastic.scenario).passed
+            )
+            self.assertEqual(
+                [item.stream_name for item in result.random_sample_ledger if item.stream_name == "sampling"],
+                ["sampling"],
+            )
+
+            always_selector = self._real_sampling_selector(model, percent=100.0)
+            always = load_smt2020(
+                DATASETS_ROOT,
+                model,
+                loader_config=LoaderConfig(
+                    mode="sampling_validation_slice",
+                    validation_sampling_operation=always_selector,
+                ),
+            )
+            assert always.scenario is not None
+            always_result = simulate({"policy_id": "fifo"}, always.scenario, 42)
+            self.assertTrue(audit_result_invariants(always_result, always.scenario).passed)
+            self.assertFalse(
+                [item for item in always_result.random_sample_ledger if item.stream_name == "sampling"]
+            )
+
+    def test_real_percent_100_cqt_targets_have_diagnostic_sampling_slice(self) -> None:
+        for model, selector in (
+            ("SMT2020_HVLM", ("r_3", 430)),
+            ("SMT2020_LVHM", ("r_1", 416)),
+        ):
+            loaded = load_smt2020(
+                DATASETS_ROOT, model,
+                loader_config=LoaderConfig(
+                    mode="sampling_validation_slice",
+                    validation_sampling_operation=selector,
+                ),
+            )
+            assert loaded.scenario is not None
+            operation = loaded.scenario.lots[0].operations[0]
+            self.assertEqual(
+                (operation.route_id, operation.step_id, operation.sample_percent),
+                (*selector, 100.0),
+            )
+            result = simulate({"policy_id": "fifo"}, loaded.scenario, 42)
+            self.assertTrue(audit_result_invariants(result, loaded.scenario).passed)
+            self.assertEqual(
+                [item.sampling_performed for item in result.trace
+                 if item.event_type == "SAMPLING_DECISION"],
+                [True],
+            )
+            self.assertFalse(
+                [item for item in result.random_sample_ledger
+                 if item.stream_name == "sampling"]
+            )
+            self.assertIn(
+                "DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD",
+                {item.code for item in loaded.loader_audit},
+            )
 
 if __name__ == "__main__":
     unittest.main()

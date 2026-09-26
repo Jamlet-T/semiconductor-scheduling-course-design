@@ -1,6 +1,6 @@
 # Metric Contract：M1 指标口径与实现审计
 
-适用版本：Simulation Contract `0.1.4`
+适用版本：Simulation Contract `0.1.5`
 
 审计范围：可信轻量 DES；不代表正式 SMT2020 数据链已接入
 
@@ -106,5 +106,6 @@ Failure 与 PM 使用单一 downtime owner，因此两个 downtime integral 不�
 - CQT duration/excess/violation；
 - Dedication record identity 与生命周期；
 - Transport interval、active snapshot、metrics、trace 与 RandomSampleLedger 的一致性。
+- 受限 Sampling 的 Scenario 百分比、operation entry/skip 顺序、随机账本和派生随机值一致性。
 
-该检查器覆盖当前轻量 DES 和受限 Transport 输出，但尚未覆盖 sampling/rework、正式 full-fab loader 结果、wafer throughput、tardiness 和利用率比率。
+该检查器覆盖当前轻量 DES、受限 Transport 与 Sampling 输出，但尚未覆盖 rework、正式 full-fab loader 结果、wafer throughput、tardiness 和利用率比率。

@@ -1,8 +1,8 @@
 # SMT2020 Loader Contract
 
-版本：`0.1.3`
-Loader：`fab_scheduler.data.load_smt2020` / `0.1.3`
-状态：静态数据链与受限 release validation slice 已形成闭环；完整可执行 Scenario 尚有 blocker
+版本：`0.1.4`
+Loader：`fab_scheduler.data.load_smt2020` / `0.1.4`
+状态：静态数据链与加工/搬运/release 受限 validation slice、sampling 判定诊断 slice 已实现；完整可执行 Scenario 尚有 blocker
 
 ## 1. 边界
 
@@ -14,7 +14,7 @@ datasets/<model> 原始字节（只读）
 → 可执行 Scenario（仅在 runtime 能完整表达语义时）
 ```
 
-`load_smt2020(dataset_root, model_id, *, loader_config=None) -> LoadedScenario` 不运行策略、不修改原始文件。`LoadedScenario.scenario=None` 表示完整模型不能在不丢语义的情况下交给当前 DES；这不是成功场景的空值替代，而是明确的 Gate 状态。`mode=validation_slice`、`mode=transport_validation_slice` 和 `mode=release_validation_slice` 只构造来自真实记录的受限闭包，用于 loader/API/provenance/runtime 兼容性 smoke，不是正式模型。
+`load_smt2020(dataset_root, model_id, *, loader_config=None) -> LoadedScenario` 不运行策略、不修改原始文件。`LoadedScenario.scenario=None` 表示完整模型不能在不丢语义的情况下交给当前 DES；这不是成功场景的空值替代，而是明确的 Gate 状态。`mode=validation_slice`、`mode=transport_validation_slice`、`mode=release_validation_slice` 和 `mode=sampling_validation_slice` 只构造来自真实记录的受限闭包，用于 loader/API/provenance/runtime 兼容性 smoke，不是正式模型。
 
 ## 2. Manifest identity
 
@@ -49,7 +49,7 @@ relative_path + size_bytes + SHA-256
 | `setupgrp.SETUP/MINRUN` | run count | `SetupGroupMemberDefinition` | 空 SETUPGRP 向下继承上一显式组 | A+B |
 | `STEP/STEP_CQT/CQT/CQTUNITS` | hr→min | CQT link in operation | target 必须存在且在 source 后，可跨步 | A+B |
 | `SVESTN/FORSTEP` | — | dedication link in operation | target 必须存在且在 source 后 | A+B |
-| `StepPercent` | percent | sampling metadata | 校验 `(0,100]`；runtime 未实现时 BLOCKER | A |
+| `StepPercent` | percent | `OperationSpec.sample_percent` | 空值保留为 `None`；显式值校验 `(0,100]`；受限 profile 可运行，超出边界保持 BLOCKER | A+D |
 | `RWKSTEP/REWORK/RWKTYPE` | percent | rework metadata | 三字段成组；比例 `(0,100]`；target 必须是同 route 更早 step；非 `lot` scope 显式 BLOCKER | A+B |
 | `order.START` | datetime | first release offset | 数据最早 START 为零点 | A+B |
 | `RDIST/REPEAT/RUNITS/RPT#/LOTSPERRPT` | min/count | `ReleaseTemplateDefinition` | 惰性生成；`RPT#` 包含 index 0；canonical ID 使用 model/source-row namespace | A+B |
@@ -87,13 +87,17 @@ REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>
 
 release 为惰性事件生成，`DUE-START` 随每个 release 平移；`ORDER/HOTLOT/PRIOR/PIECES/PART` 与 due offset 进入 immutable domain、trace 和 provenance，但策略不会自动读取 `ORDER/HOTLOT/PRIOR`。该 slice 不代表非 constant RDIST、`LOTSPERRPT>1`、非 fixed-horizon 或其他未验证组合可运行。
 
+`LoaderConfig(mode="sampling_validation_slice")` 从真实 initial WIP 中稳定选择一个当前 step 带显式 `StepPercent` 的单工序诊断切片；也可用 `validation_sampling_operation=(route_id, step_id)` 精确选择，selector 必须进入 provenance。该切片只接受 `per_lot`、唯一 `Fab` location、无 Batch/Setup/cascade，并排除 rework；随机 `0<p<100` operation 不得是 CQT endpoint，任何 sampled operation 不得是 Dedication endpoint；显式 p=100 因无 skip 分支可作为 CQT endpoint。它保留真实 WIP 的 lot/product/order/source row、wafer 数、priority 与 due，并分别验证 `0<p<100` 的单次 sampling ledger 和 `p=100` 的无随机账本边界。初始 WIP 在 `t=0` 执行 operation-entry 判定。
+
+当前 raw 共有 HVLM/LVHM 显式 StepPercent `221/955` 条，其中随机百分比 `149/662`、100% `72/293`；位于 initial WIP 当前 step 的 lot 数为 `98/75`，与 rework 重叠的 operation 为 `14/52`。sampled CQT target 为 `4/18`，逐条均为 p=100，stochastic sampled CQT target 为 `0/0`；因此实际 raw sampling profile 全部可由上述 runtime 表达，loader 将 `DI_UNSUPPORTED_SAMPLING` 替换为支持性 INFO。两模型全部显式 sampled 工序所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`，而 sampling slice 未执行 load/unload。loader 为此产生 `DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD` warning，并把省略分钟数写入 selector provenance；该 slice 不能关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`。
+
 该 slice 验证：
 
 ```text
 raw parser → static model → Scenario schema → simulate() → provenance
 ```
 
-这些 slice 不验证完整加工组合、cascade 或性能结论。Loader Contract `0.1.3` 的 transport slice 仅闭合外生无容量搬运，release slice 仅闭合上述受限 profile；sampling/rework、load/unload/cascade、setup MINRUN、batch 决策配置和 multi-calendar 等 blocker 不因此降低。
+这些 slice 不验证完整加工组合、cascade 或性能结论。Loader Contract `0.1.4` 的 transport slice 仅闭合外生无容量搬运，release slice 仅闭合其受限 profile；sampling slice 诊断实际 raw 的 `visit_index=0` 判定路径，并有意不表达真实 load/unload duration。真实 sampling blocker 已关闭；rework、load/unload/cascade、setup MINRUN、batch 决策配置和 multi-calendar 等 5 类 blocker 不因此降低。
 
 ## 7. Error and blocker policy
 
@@ -106,6 +110,7 @@ raw parser → static model → Scenario schema → simulate() → provenance
 
 ## 8. 版本记录
 
+- `0.1.4`：增加 `sampling_validation_slice` 和精确 selector；将 `StepPercent` 映射到 immutable `OperationSpec`，冻结 None/100%/随机百分比、operation-entry skip、initial-WIP `t=0`、稳定 sampling identity 与 provenance；核实真实 sampled CQT target 全为 p=100 后关闭 sampling blocker。真实 sampled 工序的 load/unload 未执行，slice 仍只作判定/映射诊断，load/unload blocker 保留。
 - `0.1.3`：增加 `release_validation_slice`；冻结惰性 release、包含 index 0 的 `RPT#`、model/source-row namespaced stable ID、due offset 平移和 fixed-horizon 闭区间边界；仅对 `constant RDIST + LOTSPERRPT=1` 声明 release 支持，其他组合显式保留为 unsupported/blocker。
 - `0.1.2`：增加 transport validation slice 和 location-pair reconciliation；将已验证的 transport runtime 从 blocker 改为 INFO；增加 StepPercent 范围、RWK 字段组、返工目标与 scope 的严格静态校验。
 - `0.1.1`：接入 processing distribution/PTPER 与 exponential failure runtime。

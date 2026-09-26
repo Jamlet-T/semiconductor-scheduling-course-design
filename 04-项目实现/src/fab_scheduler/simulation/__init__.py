@@ -38,6 +38,14 @@ from fab_scheduler.simulation.release import (
     RELEASE_RUNTIME_ID,
     RELEASE_RUNTIME_SCHEMA_VERSION,
 )
+from fab_scheduler.simulation.sampling import (
+    SAMPLING_RUNTIME_ID,
+    SAMPLING_RUNTIME_SCHEMA_VERSION,
+    SAMPLING_STREAM,
+    SamplingDecision,
+    decide_sampling,
+    sampling_entity_id,
+)
 
 __all__ = [
     "ActiveBatchSnapshot",
@@ -68,4 +76,10 @@ __all__ = [
     "TRANSPORT_STREAM",
     "RELEASE_RUNTIME_ID",
     "RELEASE_RUNTIME_SCHEMA_VERSION",
+    "SAMPLING_RUNTIME_SCHEMA_VERSION",
+    "SAMPLING_RUNTIME_ID",
+    "SAMPLING_STREAM",
+    "SamplingDecision",
+    "decide_sampling",
+    "sampling_entity_id",
 ]

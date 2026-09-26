@@ -23,8 +23,8 @@ from fab_scheduler.domain.models import (
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.3"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.3"
+SMT2020_LOADER_VERSION = "0.1.4"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.4"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -163,6 +163,7 @@ class InitialWipDefinition:
     hot_lot: bool | None = None
     source_start_minutes: float | None = None
     source_trace: str | None = None
+    source_row: int | None = None
 
     @property
     def trace(self) -> str | None:
@@ -230,18 +231,26 @@ class SMT2020StaticModel:
 
 @dataclass(frozen=True, slots=True)
 class LoaderConfig:
-    mode: Literal["audit", "validation_slice", "transport_validation_slice", "release_validation_slice"] = "audit"
+    mode: Literal[
+        "audit", "validation_slice", "transport_validation_slice",
+        "release_validation_slice", "sampling_validation_slice",
+    ] = "audit"
     validation_product_id: str | None = None
     validation_transport_pair: tuple[str, str] | None = None
     validation_release_lot_prefix: str | None = None
+    validation_sampling_operation: tuple[str, int] | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in {"audit", "validation_slice", "transport_validation_slice", "release_validation_slice"}:
+        if self.mode not in {
+            "audit", "validation_slice", "transport_validation_slice",
+            "release_validation_slice", "sampling_validation_slice",
+        }:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
         if self.mode == "audit" and (
             self.validation_product_id is not None
             or self.validation_transport_pair is not None
             or self.validation_release_lot_prefix is not None
+            or self.validation_sampling_operation is not None
         ):
             raise ValueError("audit mode 不接受 validation selector")
         if (
@@ -264,6 +273,18 @@ class LoaderConfig:
             raise ValueError("validation_release_lot_prefix 仅适用于 release_validation_slice")
         if self.validation_release_lot_prefix == "":
             raise ValueError("validation_release_lot_prefix 不能为空")
+        if self.validation_sampling_operation is not None:
+            if self.mode != "sampling_validation_slice":
+                raise ValueError(
+                    "validation_sampling_operation 仅适用于 sampling_validation_slice"
+                )
+            route_id, step_id = self.validation_sampling_operation
+            if not route_id:
+                raise ValueError("validation_sampling_operation 的 route 不能为空")
+            if isinstance(step_id, bool) or not isinstance(step_id, int) or step_id < 1:
+                raise ValueError(
+                    "validation_sampling_operation 的 step 必须为正整数"
+                )
 
     def provenance_items(self) -> tuple[tuple[str, str], ...]:
         return (
@@ -276,6 +297,13 @@ class LoaderConfig:
                 else "",
             ),
             ("validation_release_lot_prefix", self.validation_release_lot_prefix or ""),
+            (
+                "validation_sampling_operation",
+                (
+                    f"{self.validation_sampling_operation[0]}:{self.validation_sampling_operation[1]}"
+                    if self.validation_sampling_operation is not None else ""
+                ),
+            ),
         )
 
 
@@ -641,7 +669,7 @@ def load_smt2020(
     initial_wip: list[InitialWipDefinition] = []
     unknown_cqt = 0
     unknown_dedication = 0
-    for row in wip_rows:
+    for source_row, row in enumerate(wip_rows, start=2):
         route = product_route.get(row["PART"])
         current = _int(row["CURSTEP"])
         if route is None or current not in {op.step_id for op in route.operations}:
@@ -661,6 +689,7 @@ def load_smt2020(
             priority=_int(row["PRIOR"]), order_id=row["ORDER"], hot_lot=hot_lot,
             source_start_minutes=(start - epoch).total_seconds() / 60,
             source_trace=row["TRACE"] or None,
+            source_row=source_row,
         ))
         unknown_cqt += sum(op.step_id < current <= (op.cqt_target_step_id or -1) for op in route.operations)
         unknown_dedication += sum(op.step_id < current <= (op.dedication_target_step_id or -1) for op in route.operations)
@@ -725,6 +754,23 @@ def load_smt2020(
         for scope in sorted({op.rework_scope for op in rework_ops if op.rework_scope is not None})
     }
     cascading_ops = tuple(op for op in operations if op.batch_interval_minutes is not None or op.part_interval_minutes is not None)
+    cqt_endpoint_keys = {
+        (op.route_id, step_id)
+        for op in cqt_ops
+        for step_id in (op.step_id, op.cqt_target_step_id)
+        if step_id is not None
+    }
+    dedication_endpoint_keys = {
+        (op.route_id, step_id)
+        for op in dedication_ops
+        for step_id in (op.step_id, op.dedication_target_step_id)
+        if step_id is not None
+    }
+    cascading_tool_families = {
+        template.tool_family_id
+        for template in machine_templates
+        if template.cascading
+    }
     location_by_machine = {
         machine_id: template.location_id
         for template in machine_templates
@@ -738,6 +784,35 @@ def load_smt2020(
             if machine_id in location_by_machine
         }
         return next(iter(locations)) if len(locations) == 1 else None
+
+    def sampling_runtime_profile(operation: OperationDefinition) -> bool:
+        """检查 raw StepPercent 是否落在当前 sampling runtime 的受限闭包。"""
+
+        locations = {
+            location_by_machine[machine_id]
+            for machine_id in operation.eligible_machine_ids
+            if machine_id in location_by_machine
+        }
+        return (
+            operation.processing_basis == "per_lot"
+            and locations == {"Fab"}
+            and operation.batch_min_wafers is None
+            and operation.batch_max_wafers is None
+            and operation.required_setup is None
+            and operation.setup_override_minutes is None
+            and operation.dedication_target_step_id is None
+            and (
+                operation.sample_percent == 100.0
+                or (operation.route_id, operation.step_id) not in cqt_endpoint_keys
+            )
+            and (
+                operation.route_id,
+                operation.step_id,
+            ) not in dedication_endpoint_keys
+            and operation.tool_family_id not in cascading_tool_families
+            and operation.batch_interval_minutes is None
+            and operation.part_interval_minutes is None
+        )
 
     route_location_transition_counts: dict[tuple[str, str], int] = {}
     ambiguous_location_transitions = 0
@@ -804,8 +879,82 @@ def load_smt2020(
             "相邻工序的设备资格不能唯一解析为 location，无法确定 transport pair",
             transitions=ambiguous_location_transitions,
         )
-    if sample_ops:
-        note("BLOCKER", "DI_UNSUPPORTED_SAMPLING", "StepPercent 抽样跳步尚未实现", affected=len(sample_ops))
+    unsupported_sampling_ops = tuple(
+        op for op in sample_field_ops if not sampling_runtime_profile(op)
+    )
+    supported_sampling_ops = tuple(
+        op for op in sample_field_ops if sampling_runtime_profile(op)
+    )
+    sampling_cqt_endpoint_ops = tuple(
+        op
+        for op in sample_field_ops
+        if (op.route_id, op.step_id) in cqt_endpoint_keys
+    )
+    stochastic_sampling_cqt_endpoint_ops = tuple(
+        op
+        for op in sampling_cqt_endpoint_ops
+        if op.sample_percent != 100.0
+    )
+    sampling_dedication_endpoint_ops = tuple(
+        op
+        for op in sample_field_ops
+        if (op.route_id, op.step_id) in dedication_endpoint_keys
+    )
+    sampling_cascading_tool_ops = tuple(
+        op for op in sample_field_ops if op.tool_family_id in cascading_tool_families
+    )
+    tool_templates_by_family = {
+        template.tool_family_id: template for template in machine_templates
+    }
+    sampling_load_unload_ops = tuple(
+        op
+        for op in sample_field_ops
+        if (
+            tool_templates_by_family[op.tool_family_id].load_minutes > 0
+            or tool_templates_by_family[op.tool_family_id].unload_minutes > 0
+        )
+    )
+    sampling_rework_overlap_ops = tuple(
+        op for op in sample_field_ops if op.rework_step_id is not None
+    )
+    if unsupported_sampling_ops:
+        note(
+            "BLOCKER", "DI_UNSUPPORTED_SAMPLING",
+            "部分 StepPercent 抽样超出当前受限 runtime profile；随机 sampling 作为 CQT/Dedication endpoint 时的 skip 语义尚未冻结",
+            affected=len(unsupported_sampling_ops),
+            cqt_endpoints=len(sampling_cqt_endpoint_ops),
+            stochastic_cqt_endpoints=len(stochastic_sampling_cqt_endpoint_ops),
+            dedication_endpoints=len(sampling_dedication_endpoint_ops),
+            cascading_tools=len(sampling_cascading_tool_ops),
+        )
+        if supported_sampling_ops:
+            note(
+                "INFO", "DI_SAMPLING_RUNTIME_SUPPORTED_LIMITED",
+                "per_lot/Fab StepPercent 子集已由 runtime 支持；p=100 CQT endpoint 确定执行",
+                affected=len(supported_sampling_ops),
+                stochastic=sum(
+                    op.sample_percent not in (None, 100.0)
+                    for op in supported_sampling_ops
+                ),
+            )
+    elif sample_field_ops:
+        note(
+            "INFO", "DI_SAMPLING_RUNTIME_SUPPORTED",
+            "显式 StepPercent 均符合 per_lot/Fab 且无随机 CQT endpoint、dedication/cascade profile；由 runtime 执行抽样",
+            affected=len(sample_field_ops), stochastic=len(sample_ops),
+        )
+    if sampling_rework_overlap_ops:
+        note(
+            "INFO", "DI_SAMPLING_REWORK_OVERLAP",
+            "部分 sampling operation 同时声明 rework；抽样 runtime 不隐式忽略该组合，仍由 rework blocker 阻塞正式组合",
+            operations=len(sampling_rework_overlap_ops),
+        )
+    if config.mode == "sampling_validation_slice":
+        note(
+            "WARNING", "DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD",
+            "sampling validation slice 仅验证判定/映射；原设备 LOAD/UNLOAD 尚未进入物理时长",
+            raw_operations_with_load_unload=len(sampling_load_unload_ops),
+        )
     if rework_ops:
         note("BLOCKER", "DI_UNSUPPORTED_REWORK", "RWKSTEP/REWORK 路线回跳尚未实现", affected=len(rework_ops))
     if setup_minrun_count:
@@ -833,6 +982,34 @@ def load_smt2020(
 
     physical_machine_count = sum(len(item.resource_instance_ids) for item in machine_templates if item.location_id != "Delay")
     virtual_delay_resource_count = sum(len(item.resource_instance_ids) for item in machine_templates if item.location_id == "Delay")
+    route_id_by_product = {item.product_id: item.route_id for item in products}
+    sample_by_route_step = {
+        (op.route_id, op.step_id): op for op in sample_field_ops
+    }
+    initial_wip_sampling = tuple(
+        (wip, sample_by_route_step[(route_id_by_product[wip.product_id], wip.current_step_id)])
+        for wip in initial_wip
+        if (route_id_by_product.get(wip.product_id), wip.current_step_id)
+        in sample_by_route_step
+    )
+
+    def percent_key(percent: float) -> str:
+        return str(int(percent)) if float(percent).is_integer() else str(percent)
+
+    sampling_percent_distribution = {
+        percent_key(percent): sum(
+            op.sample_percent == percent for op in sample_field_ops
+        )
+        for percent in sorted({op.sample_percent for op in sample_field_ops if op.sample_percent is not None})
+    }
+    initial_wip_sampling_percent_distribution = {
+        percent_key(percent): sum(
+            op.sample_percent == percent for _, op in initial_wip_sampling
+        )
+        for percent in sorted({op.sample_percent for _, op in initial_wip_sampling if op.sample_percent is not None})
+    }
+    initial_wip_sampling_100 = sum(op.sample_percent == 100.0 for _, op in initial_wip_sampling)
+    initial_wip_sampling_stochastic = sum(op.sample_percent not in (None, 100.0) for _, op in initial_wip_sampling)
     stats: dict[str, Any] = {
         "products": len(products), "routes": len(routes), "operations": len(operations),
         "tool_table_rows": len(tool_rows), "tool_groups": len(family_machines) - int(virtual_delay_resource_count > 0), "physical_machines": physical_machine_count,
@@ -847,6 +1024,33 @@ def load_smt2020(
         "dedication_constraints": len(dedication_ops),
         "sampling_field_operations": len(sample_field_ops),
         "stochastic_sampling_operations": len(sample_ops),
+        "sampling_percent_distribution": sampling_percent_distribution,
+        "sampling_percent_counts": sampling_percent_distribution,
+        "sampling_100_operations": sum(op.sample_percent == 100.0 for op in sample_field_ops),
+        "sampling_stochastic_operations": len(sample_ops),
+        "sampling_profile_unsupported_operations": len(unsupported_sampling_ops),
+        "sampling_profile_supported_operations": len(supported_sampling_ops),
+        "sampling_cqt_endpoint_operations": len(sampling_cqt_endpoint_ops),
+        "sampling_stochastic_cqt_endpoint_operations": len(
+            stochastic_sampling_cqt_endpoint_ops
+        ),
+        "sampling_dedication_endpoint_operations": len(sampling_dedication_endpoint_ops),
+        "sampling_cascading_tool_operations": len(sampling_cascading_tool_ops),
+        "sampling_load_unload_operations": len(sampling_load_unload_ops),
+        "initial_wip_at_sampling_lots": len(initial_wip_sampling),
+        "initial_wip_at_sampling_count": len(initial_wip_sampling),
+        "initial_wip_at_sampling_percent_distribution": initial_wip_sampling_percent_distribution,
+        "initial_wip_at_sampling_counts": {
+            "100": initial_wip_sampling_100,
+            "stochastic": initial_wip_sampling_stochastic,
+        },
+        "initial_wip_at_sampling_100": initial_wip_sampling_100,
+        "initial_wip_at_sampling_stochastic": initial_wip_sampling_stochastic,
+        "sampling_rework_overlap_operations": len(sampling_rework_overlap_ops),
+        "sampling_rework_overlap_count": len(sampling_rework_overlap_ops),
+        "sampling_rework_overlap_initial_wip_lots": sum(
+            op.rework_step_id is not None for _, op in initial_wip_sampling
+        ),
         "rework_operations": len(rework_ops),
         "rework_scope_counts": rework_scope_counts,
         "cascading_operations": len(cascading_ops), "setup_transitions": setup_transition_count,
@@ -881,6 +1085,8 @@ def load_smt2020(
         scenario = _build_transport_validation_slice(static_model, manifest, config)
     elif config.mode == "release_validation_slice":
         scenario = _build_release_validation_slice(static_model, manifest, config)
+    elif config.mode == "sampling_validation_slice":
+        scenario = _build_sampling_validation_slice(static_model, manifest, config)
     else:
         scenario = None
     evidence = (
@@ -898,6 +1104,12 @@ def load_smt2020(
             "A/B/D/E",
             "order + part/route + release runtime reference + local frozen contract",
             "保留真实模板与 RPT#，仅在 fixed-horizon 下按 constant interval 惰性生成；slice 的 ID 与 horizon 可复现",
+        ),
+        SemanticEvidence(
+            "sampling-runtime",
+            "A/B/C/D/E",
+            "route.StepPercent + initial WIP + SMT2020 paper + fixed PySCFabSim reference + local contract",
+            "受限 per-lot operation-entry 判定可复现；真实 CQT target 均为 p=100，LOAD/UNLOAD 组合继续阻塞完整物理兼容",
         ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
@@ -935,6 +1147,177 @@ def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest
         machines=(MachineSpec(machine_id),),
         lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id, processing_distribution=distribution, processing_basis=op.processing_basis),), quantity_wafers=25),),
         termination_mode="fixed_horizon", horizon=duration + distribution.width_minutes / 2 + 1,
+        dataset_provenance=provenance,
+    )
+
+
+def _build_sampling_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """从真实 initial WIP 选取一个显式 StepPercent 的单工序 slice。
+
+    选择以 ``(route_id, step_id)`` 精确定位工序，再以 lot_id/source row
+    稳定定位真实 WIP。默认优先随机抽样（p<100）的无组合约束工序；显式
+    selector 可选择 p=100 工序，用于验证无 sampling ledger 的边界。
+    """
+
+    product_by_route = {item.route_id: item for item in model.products}
+    location_by_machine = {
+        machine_id: template.location_id
+        for template in model.machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+    all_operations = tuple(
+        operation for route in model.routes for operation in route.operations
+    )
+    cqt_endpoint_keys = {
+        (operation.route_id, step_id)
+        for operation in all_operations
+        if operation.cqt_target_step_id is not None
+        for step_id in (operation.step_id, operation.cqt_target_step_id)
+    }
+    dedication_endpoint_keys = {
+        (operation.route_id, step_id)
+        for operation in all_operations
+        if operation.dedication_target_step_id is not None
+        for step_id in (operation.step_id, operation.dedication_target_step_id)
+    }
+    cascading_tool_families = {
+        template.tool_family_id
+        for template in model.machine_templates
+        if template.cascading
+    }
+
+    def profile_supported(operation: OperationDefinition) -> bool:
+        locations = {
+            location_by_machine[machine_id]
+            for machine_id in operation.eligible_machine_ids
+            if machine_id in location_by_machine
+        }
+        return (
+            operation.sample_percent is not None
+            and operation.processing_basis == "per_lot"
+            and locations == {"Fab"}
+            and operation.batch_min_wafers is None
+            and operation.batch_max_wafers is None
+            and operation.required_setup is None
+            and operation.setup_override_minutes is None
+            and operation.dedication_target_step_id is None
+            and (
+                operation.sample_percent == 100.0
+                or (operation.route_id, operation.step_id) not in cqt_endpoint_keys
+            )
+            and (
+                operation.route_id,
+                operation.step_id,
+            ) not in dedication_endpoint_keys
+            and operation.tool_family_id not in cascading_tool_families
+            and operation.batch_interval_minutes is None
+            and operation.part_interval_minutes is None
+        )
+
+    operations_by_key = {
+        (route.route_id, operation.step_id): operation
+        for route in model.routes
+        for operation in route.operations
+        if profile_supported(operation)
+    }
+    wip_by_key: dict[tuple[str, int], list[InitialWipDefinition]] = {}
+    for wip in model.initial_wip:
+        product = next(
+            (item for item in model.products if item.product_id == wip.product_id),
+            None,
+        )
+        if product is None:
+            continue
+        wip_by_key.setdefault((product.route_id, wip.current_step_id), []).append(wip)
+
+    candidates = [
+        (key, operation, wip)
+        for key, operation in operations_by_key.items()
+        for wip in wip_by_key.get(key, ())
+        if operation.rework_step_id is None
+    ]
+    requested = config.validation_sampling_operation
+    if requested is not None:
+        candidates = [item for item in candidates if item[0] == requested]
+        if not candidates:
+            raise ValueError(
+                "找不到满足 sampling validation slice 的精确真实 selector："
+                f"{requested[0]}:{requested[1]}"
+            )
+    if not candidates:
+        raise ValueError("找不到当前 raw sampling profile 中且位于 initial WIP 的真实工序")
+
+    key, operation, wip = sorted(
+        candidates,
+        key=lambda item: (
+            item[1].sample_percent == 100.0,
+            item[0][0],
+            item[0][1],
+            item[2].lot_id,
+            item[2].source_row or 0,
+        ),
+    )[0]
+    product = product_by_route[key[0]]
+    machine_id = operation.eligible_machine_ids[0]
+    tool_template = next(
+        template
+        for template in model.machine_templates
+        if machine_id in template.resource_instance_ids
+    )
+    processing = to_runtime_distribution(operation.processing)
+    runtime_operation = OperationSpec(
+        operation.step_id,
+        processing.mean_minutes,
+        (machine_id,),
+        route_id=operation.route_id,
+        tool_group_id=operation.tool_family_id,
+        processing_distribution=processing,
+        processing_basis=operation.processing_basis,
+        sample_percent=operation.sample_percent,
+    )
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        config.provenance_items() + (
+            ("sampling_slice_omitted_load_minutes", str(tool_template.load_minutes)),
+            ("sampling_slice_omitted_unload_minutes", str(tool_template.unload_minutes)),
+        ),
+        tuple(
+            SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256)
+            for item in manifest.files
+        ),
+    )
+    lot = LotSpec(
+        wip.lot_id,
+        0.0,
+        (runtime_operation,),
+        quantity_wafers=wip.quantity_wafers,
+        due_time=wip.due_minutes,
+        priority=wip.priority,
+        is_initial_wip=True,
+        product_id=wip.product_id,
+        order_id=wip.order_id,
+        hot_lot=wip.hot_lot,
+        source_row=wip.source_row,
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:sampling-validation-slice:"
+            f"{operation.route_id}:{operation.step_id}:{wip.lot_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=(MachineSpec(machine_id, location_id="Fab"),),
+        lots=(lot,),
+        termination_mode="fixed_horizon",
+        horizon=processing.mean_minutes + processing.width_minutes / 2 + 1,
         dataset_provenance=provenance,
     )
 

@@ -78,7 +78,7 @@ class FailureRuntimeTests(unittest.TestCase):
         self.assertEqual(result.metrics.terminal_wip_lots, 1)
         self.assertEqual(result.failure_count, 2)
         self.assertEqual(result.total_downtime, 3)
-        self.assertEqual(result.provenance.simulation_contract_version, "0.1.4")
+        self.assertEqual(result.provenance.simulation_contract_version, "0.1.5")
         self.assertEqual(result.provenance.simulation_config["failure_specs"][0]["model_type"], "scripted")
 
     def test_failure_while_idle_blocks_dispatch_then_repair_uses_normal_barrier(self) -> None:

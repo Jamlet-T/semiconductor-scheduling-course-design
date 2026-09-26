@@ -2,9 +2,9 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.4`
+适用契约：Simulation Contract `0.1.5`
 
-审计日期：2026-09-23
+审计日期：2026-09-25
 
 本文只回答“某项语义的依据来自哪里”。它不把微型场景运行时验证等同于正式 SMT2020 数据接入验证。
 
@@ -49,14 +49,15 @@
 | Failure/PM overlap ownership | 无充分原始业务说明 | E | 单一 downtime owner；重叠 occurrence 按 Contract 抑制/失效 | 本项目显式规则 |
 | PM 抑制 stochastic failure 后重新起算 | 无充分原始业务说明 | E | PM 结束后按实体索引流重新安排下一 occurrence | 本项目显式规则 |
 | Transport | route location 与 `fromto` | A/B/D/E | 当前主线使用外生延迟，不占运输资源；仅已配置 `Fab→Fab` 使用 `uniform(7.5,2.5)`，其余 pair 为零并显式审计 | runtime、CRN、CQT、fixed horizon 与真实 configured/missing-pair slice 已验证 |
-| Sampling/rework | `StepPercent`、`RWKSTEP/REWORK/RWKTYPE` | A/B | 按 route occurrence 生成明确分支，不允许隐式修改 route | 范围、字段组、scope 与回跳引用已静态验证；运行时未实现 |
+| Sampling | `StepPercent` | A/B/C/D/E | `None` 始终执行；显式 100% 不抽随机；`0<p<100` 在 operation entry 以稳定流判断，失败写 skip trace | runtime/initial-WIP 诊断已验证；sampled CQT targets 4/18 全为 p100，stochastic endpoint=0，sampling blocker 已关闭；load/unload 另列 blocker |
+| Rework | `RWKSTEP/REWORK/RWKTYPE` | A/B/C/D | raw 为 lot scope 并回到更早 step；不得在证据不足时假定每 visit 或仅一次触发 | 字段组与回跳引用已静态验证；参考实现是每 lot/source 最多一次，现 Data Contract 未冻结本地选择，runtime 未实现 |
 
 ## 3. 证据来源结论
 
 - **来自原始数据（A/B）**：投放、交期、设备资格、加工参数、Setup、Batch、CQT、Dedication、Failure/PM 配置以及 transport 的字段或引用关系。
-- **来自论文/官方资料（C）**：当前核心运行语义没有仅靠 C 级证据闭合的条目；本次审计不以二手论文替代本地文件和契约。
-- **仅来自参考实现（D）**：`uniform(m,w)` 的“均值 + 全宽”解释，以及 Failure 抢占行为的交叉参考。参考实现只提供佐证。
-- **本项目显式建模假设（E）**：初始 setup 回退、preemptive-resume、wafer PM `reset_zero`、Failure/PM 单 owner、PM 抑制 failure 后重新起算、外生且无资源的运输模型。
+- **来自论文/官方资料（C）**：SMT2020 论文将 metrology inspection frequency 描述为 sampling rate，并给出多类典型频率；它支持字段用途，不定义本项目 CQT/rework 组合事件顺序。
+- **仅来自参考实现（D）**：`uniform(m,w)` 的“均值 + 全宽”、Failure 抢占，以及 StepPercent 的执行概率/派工可见前判定作为交叉参考。参考实现只提供佐证。
+- **本项目显式建模假设（E）**：初始 setup 回退、preemptive-resume、wafer PM `reset_zero`、Failure/PM 单 owner、PM 抑制 failure 后重新起算、外生且无资源的运输模型，以及 sampling identity/trace 结构。
 - **无法恢复的历史状态（F）**：初始 WIP 的真实 setup、dedication machine、已开启 CQT 起点、wafer PM counter，以及其他未保存在数据快照中的 machine history。
 
 ## 4. 报告使用规则
@@ -65,7 +66,7 @@
 
 ## 5. Loader 实测更新
 
-Loader Contract `0.1.3` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
+Loader Contract `0.1.4` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
 
 - Product/Route/Operation、STNFAM→具体 machine、Setup transition/group、Batch wafer bounds、CQT、Dedication、Failure/PM calendar/attach、Transport、ReleaseTemplate 和 Initial WIP 已进入 `SMT2020StaticModel`；
 - raw route row 与 parsed operation 逐行 reconciliation，跨文件引用没有 ERROR；
@@ -73,6 +74,9 @@ Loader Contract `0.1.3` 已在真实 HVLM/LVHM 上完成静态映射与受限 ru
 - initial setup、dedication、CQT 和 wafer-PM counter 仍为 F/E，loader 只输出 warning/count，不恢复虚构历史；
 - processing distribution/PTPER、exponential failure 与外生 transport 已形成 raw→Scenario→runtime→test 闭环；transport 的未配置 pair 在静态 reconciliation 和运行结果中均显式审计；
 - release template 已在受限 profile 关闭 blocker：HVLM 5 个 template/442000 capacity，LVHM 21 个 template/2202000 capacity，raw `START` 全为 0、`RDIST=constant/min`、`LOTSPERRPT=1`、`PIECES=25`、`HOTLOT=no`；非 constant、`LOTSPERRPT>1`、非 fixed-horizon 和未验证组合不宣称支持。
-- static mapping 不等于完整 runtime closure。sampling/rework、load/unload/cascade、setup MINRUN、batch `B_target/T_max` 与 multi-calendar 仍为 Data Integration 的 6 类 blocker。
+- sampling 基础判定已形成 raw→Scenario→decision/trace/ledger/provenance→audit 诊断链：HVLM/LVHM 显式 221/955、随机 149/662、100% 72/293、initial-WIP 98/75、rework overlap 14/52；
+- 全部显式 sampled 工序（221/955）都使用带 `LOAD=1 min / UNLOAD=1 min` 的 tool template，诊断 slice 未执行这两段时长；因此它不是物理 duration 闭环；
+- raw sampled CQT target 为 HVLM 4、LVHM 18，逐条均为 p100，stochastic endpoint 为 0；p100 不存在 skip 分支，sampling blocker 关闭；未来 p<100 endpoint 仍显式 unsupported；
+- static mapping 不等于完整 runtime closure。rework、load/unload/cascade、setup MINRUN、batch `B_target/T_max` 与 multi-calendar 仍构成 Data Integration 的 5 类 blocker。
 
 完整判定见 `smt2020-data-integration-gate.md`。

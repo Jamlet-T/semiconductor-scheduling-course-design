@@ -322,8 +322,8 @@ class M1ClosureMetricAndBoundaryTests(unittest.TestCase):
 
     def test_all_fixtures_and_results_use_contract_0_1_4(self) -> None:
         fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(fixture["contract_version"], "0.1.4")
-        self.assertEqual(fixture["event_priority_contract_version"], "0.1.4")
+        self.assertEqual(fixture["contract_version"], "0.1.5")
+        self.assertEqual(fixture["event_priority_contract_version"], "0.1.5")
         scenario = Scenario(
             "VERSION_AUDIT",
             "audit@0.1.3",
@@ -331,7 +331,7 @@ class M1ClosureMetricAndBoundaryTests(unittest.TestCase):
             (LotSpec("L1", 0, (op(1, 1),)),),
         )
         result = Simulator(scenario, seed=42, git_commit="audit").run()
-        self.assertEqual(result.provenance.simulation_contract_version, "0.1.4")
+        self.assertEqual(result.provenance.simulation_contract_version, "0.1.5")
         self.assertEqual(
             result.provenance.dispatch_policy_contract_version,
             "0.1.1",
@@ -370,7 +370,7 @@ class M1ClosureMetricAndBoundaryTests(unittest.TestCase):
         )
         result = Simulator(scenario, seed=7, git_commit="audit-commit").run()
         provenance = result.provenance
-        self.assertEqual(provenance.simulation_contract_version, "0.1.4")
+        self.assertEqual(provenance.simulation_contract_version, "0.1.5")
         self.assertEqual(provenance.dataset_version, "audit-dataset@sha256:test")
         self.assertEqual(provenance.seed, 7)
         self.assertEqual(provenance.git_commit, "audit-commit")

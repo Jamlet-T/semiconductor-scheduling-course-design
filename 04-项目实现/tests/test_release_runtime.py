@@ -81,7 +81,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         releases = [item for item in result.trace if item.event_type == "LOT_RELEASE"]
         self.assertEqual([item.sim_time for item in releases], [0.0, 2.0, 4.0])
         self.assertEqual(result.metrics.released_lots, 3)
-        self.assertEqual(result.provenance.simulation_contract_version, "0.1.4")
+        self.assertEqual(result.provenance.simulation_contract_version, "0.1.5")
         self.assertEqual(
             result.provenance.simulation_config["release_runtime"]["id"],
             "fixed_horizon_constant_interval_lots_per_repeat_1",

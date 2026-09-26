@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.4`
+版本：`0.1.5`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -65,7 +65,7 @@ objective = evaluate(metrics)
 | --- | --- | --- |
 | Lot 投放 | FROZEN | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 惰性生成；每个重复 lot 继承 `DUE-START` 的相对交期；SMT2020 真实支持边界见本节后的 release profile |
 | 首工序入队 | FROZEN | release 后直接进入首工序队列；首工序前不增加搬运 |
-| 路线推进 | FROZEN | 工序由 `(route_id, step_id, visit_index)` 唯一标识；只有加工完成事件才能推进实际路线 |
+| 路线推进 | FROZEN | 工序由 `(route_id, step_id, visit_index)` 唯一标识；物理执行的工序只由加工完成事件推进，显式 sampling 跳步由本节的独立决定/trace 推进 |
 | 工序完成 | FROZEN | 加工及约定的卸载活动完成后记为完成；随后 lot 进入运输或完成状态 |
 | 设备资格 | FROZEN | 工序只能分配给其 `STNFAM` 对应设备组中的合格设备 |
 | 组内机台 | FROZEN | 每台物理机拥有独立状态、当前 setup、故障/维护状态和占用区间 |
@@ -96,6 +96,19 @@ REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>
 其中 `template_id` 必须包含 model/source-row namespace，不能只使用原始 `LOT` 名称；`RPT#` 是包含 `index=0` 的重复数量边界，故 `repeat_index ∈ [0, RPT# - 1]`。`member_index` 表示该重复点内的成员序号。release 时刻为 `START + repeat_index × interval`，以 SMT2020 十进制文本的数值表示进行确定性组合后再转换为 runtime float，避免 exact-horizon 边界因二进制乘法漂移而漏发；due 时刻为该 lot release 加 `DUE-START`，不得把首个 START 或原始 DUE 作为所有重复 lot 的绝对值复用。
 
 本轮 SMT2020 release runtime 只声明以下联合支持边界：`termination_condition=fixed_horizon`、`RDIST=constant`（`RUNITS=min`）和 `LOTSPERRPT=1`；当前 raw profile 另外观测到 `START` 全为零、`PIECES=25`、`HOTLOT=no`。非 constant `RDIST`、`LOTSPERRPT>1`、非 fixed-horizon 终止，或包含尚未验证的字段组合，必须返回显式 unsupported/blocker，不得通过预展开、重复命名或静默降级宣称支持。
+
+### 3.2 SMT2020 sampling profile
+
+`OperationSpec.sample_percent` 只表达 operation-entry sampling，不是派工策略特征。其行为冻结为：
+
+- `None` 表示 raw 未配置：直接执行该工序，不产生 sampling decision，也不消费随机量；
+- 显式 `p=100`：产生 `SAMPLING_DECISION(performed=true)`，但不消费 sampling 随机量；
+- `0<p<100`：进入工序时以稳定实体索引流抽取 `draw ~ uniform(0,100)`，当且仅当 `draw <= p` 时执行；
+- 判定发生在派工可见以及首段/下一段 transport 之前；内部 lot 可已处于 `QUEUED` 状态，但在判定完成前不得进入 feasible actions。未命中时产生同刻 `OPERATION_SKIPPED`，不占设备、不抽 processing duration、不累计 wafer-PM 完成量，并继续扫描下一工序；连续跳步和跳过末工序均允许；
+- 初始 WIP 的当前工序在 `t=0` 按同一规则判定；策略只看到已通过 sampling、实际进入队列的 feasible action，不能读取未来 sampling draw；
+- sampling 随机 identity 为 `lot_id + route_id + step_id + visit_index`，occurrence 使用 `visit_index`，从而跨策略保持 CRN；当前已验证边界只有无 rework 的 `visit_index=0`。
+
+当前受限 runtime 只允许 `per_lot`、位置唯一为 `Fab`、无 Batch/Setup/cascade；CQT endpoint 仅允许显式 `p=100`，任何带 `StepPercent` 的 Dedication endpoint 均暂不支持。显式 `p=100` 不存在 skip 分支，因此可以作为 CQT endpoint。raw 逐条核对显示 sampled CQT target 为 HVLM 4、LVHM 18，且全部 `StepPercent=100`；stochastic sampled CQT target 为 0，因此当前真实 profile 不触发含糊的“跳过 target”语义，`DI_UNSUPPORTED_SAMPLING` 可以关闭。未来若出现随机 CQT endpoint 或 sampled Dedication endpoint，必须显式拒绝。两模型全部显式 StepPercent 工序还都使用带 `LOAD=1 min / UNLOAD=1 min` 的 tool template；当前 sampling slice 不执行这两段时长，只是抽样判定/映射诊断，`DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保留。sampling 判定闭环不等于完整物理 duration 闭环。
 
 ## 4. Batch
 
@@ -273,3 +286,7 @@ MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按�
 ### 0.1.4 修订说明
 
 本版本冻结 SMT2020 release template 的惰性投放、包含 model/source-row namespace 的 stable ID、`RPT#` 包含 index 0、固定 horizon 闭区间事件处理，以及 raw release profile 的联合支持边界。只有 `fixed_horizon + constant RDIST + LOTSPERRPT=1` 可声明真实支持；非 constant、`LOTSPERRPT>1` 或其他未证实组合必须显式拒绝。`ORDER/HOTLOT/PRIOR/PIECES/PART` 与 due offset 进入 immutable domain、trace 和 provenance，策略不自动读取其中的 `ORDER/HOTLOT/PRIOR`。
+
+### 0.1.5 修订说明
+
+本版本冻结受限 SMT2020 operation-entry sampling：区分未配置、显式 100% 和随机百分比；随机判定使用稳定 `sampling` 实体索引流，失败产生独立 `OPERATION_SKIPPED`，且发生在派工可见以及首段/下一段 transport 之前。初始 WIP 同样在 `t=0` 判定，策略只看到 sampling 后的工序。真实 sampled CQT target 全部为 p=100，stochastic endpoint 为 0，因此真实 sampling profile 已闭环；`p<100` endpoint 仍显式 unsupported。全部 sampled 工序的 load/unload 未进入诊断 slice，rework visit 也未闭环，二者继续由各自 blocker 管理。

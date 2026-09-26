@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from math import floor
+import hashlib
+from math import floor, isfinite
+import random
 from statistics import fmean
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from fab_scheduler.domain.models import Scenario
 from fab_scheduler.simulation.engine import SimulationResult
@@ -36,6 +38,439 @@ class ResultInvariantAudit:
     @property
     def passed(self) -> bool:
         return not self.violations
+
+
+_SAMPLING_STREAM = "sampling"
+_SAMPLING_RUNTIME_SCHEMA_VERSION = "0.1.0"
+_SAMPLING_RUNTIME_ID = "per_lot_sampling"
+
+
+def _sampling_operation_key(record: TraceRecord) -> tuple[Any, ...]:
+    """返回 sampling/operation 事件共用的稳定键。
+
+    Sampling 的实体 identity 把 visit 放在 occurrence 中，而 trace 事件本身
+    仍需要保留 visit 维度。这里集中构造键，避免审计逻辑因事件类型而漂移。
+    """
+
+    return (
+        record.lot_id,
+        record.route_id,
+        record.step_id,
+        record.visit_index,
+    )
+
+
+def _expected_sampling_entity_id(record: TraceRecord) -> str | None:
+    if (
+        record.lot_id is None
+        or record.route_id is None
+        or record.step_id is None
+        or record.visit_index is None
+    ):
+        return None
+    return (
+        f"{record.lot_id}|{record.route_id}|{record.step_id}|"
+        f"visit={record.visit_index}"
+    )
+
+
+def _audit_sampling_invariants(
+    result: SimulationResult,
+    scenario: Scenario,
+    *,
+    tolerance: float,
+) -> list[str]:
+    """独立核对 StepPercent sampling 的决定、事件和随机账本。
+
+    该检查器只消费结果中的 trace、ledger 和 provenance，不调用 sampling
+    runtime，因此可以发现 runtime 自己同时篡改决定和派生记录的情况。
+    """
+
+    violations: list[str] = []
+    trace = tuple(result.trace)
+    decisions = [
+        record for record in trace if record.event_type == "SAMPLING_DECISION"
+    ]
+    skipped = [
+        record for record in trace if record.event_type == "OPERATION_SKIPPED"
+    ]
+    sampling_ledger = [
+        record
+        for record in result.random_sample_ledger
+        if record.stream_name == _SAMPLING_STREAM
+    ]
+    ledger_by_key: dict[tuple[str, str, int], list[Any]] = {}
+    for item in sampling_ledger:
+        ledger_by_key.setdefault(item.identity, []).append(item)
+    lots_by_id = {lot.lot_id: lot for lot in scenario.lots}
+    templates_by_id = {
+        template.template_id: template for template in scenario.release_templates
+    }
+    for release in trace:
+        if release.event_type != "LOT_RELEASE" or release.lot_id in lots_by_id:
+            continue
+        template = templates_by_id.get(release.release_template_id)
+        if template is not None:
+            lots_by_id[release.lot_id] = template
+
+    operations_by_spec: dict[int, dict[tuple[str, int], Any]] = {}
+
+    def scenario_operation(record: TraceRecord):
+        lot_spec = lots_by_id.get(record.lot_id)
+        if lot_spec is None:
+            return None
+        operations_identity = id(lot_spec.operations)
+        lookup = operations_by_spec.get(operations_identity)
+        if lookup is None:
+            lookup = {
+                (item.route_id, item.step_id): item
+                for item in lot_spec.operations
+            }
+            operations_by_spec[operations_identity] = lookup
+        return lookup.get((record.route_id, record.step_id))
+
+    # A sampling decision must be present exactly once for each sampled
+    # operation instance. Duplicates are otherwise easy to hide by matching
+    # only on (lot, step).
+    decisions_by_key: dict[tuple[Any, ...], list[TraceRecord]] = {}
+    for record in decisions:
+        decisions_by_key.setdefault(_sampling_operation_key(record), []).append(
+            record
+        )
+    for key, records in decisions_by_key.items():
+        if len(records) != 1:
+            violations.append(f"sampling decision identity 重复：{key!r}")
+
+    # Validate every decision and its ledger entry. p=100 is deliberately a
+    # deterministic path and must not materialize a random sample.
+    expected_ledger_keys: set[tuple[str, str, int]] = set()
+    for record in decisions:
+        key = _sampling_operation_key(record)
+        percent = record.sampling_percent
+        draw = record.sampling_draw
+        performed = record.sampling_performed
+        entity_id = record.sampling_entity_id
+        expected_entity_id = _expected_sampling_entity_id(record)
+        operation = scenario_operation(record)
+        if operation is None or operation.sample_percent is None:
+            violations.append(f"sampling decision 无对应 Scenario 配置：{key!r}")
+        elif percent != operation.sample_percent:
+            violations.append(
+                f"sampling percent 与 Scenario 配置不一致：{key!r}"
+            )
+
+        try:
+            percent_value = float(percent)
+        except (TypeError, ValueError):
+            percent_value = float("nan")
+        if percent is None or isinstance(percent, bool) or not isfinite(percent_value):
+            violations.append(f"sampling percent 非法：{percent!r}")
+            continue
+        percent = percent_value
+        if not 0 < percent <= 100:
+            violations.append(f"sampling percent 超出边界：{percent!r}")
+        if entity_id != expected_entity_id:
+            violations.append(
+                f"sampling entity identity 不一致：{entity_id!r} != "
+                f"{expected_entity_id!r}"
+            )
+        if performed not in (True, False):
+            violations.append(f"sampling performed 非布尔值：{performed!r}")
+
+        ledger_key = None
+        if entity_id is not None and record.visit_index is not None:
+            ledger_key = (_SAMPLING_STREAM, entity_id, record.visit_index)
+            expected_ledger_keys.add(ledger_key)
+        matching_ledger = ledger_by_key.get(ledger_key, ())
+        if len(matching_ledger) > 1:
+            violations.append(f"sampling ledger identity 重复：{ledger_key!r}")
+
+        if percent == 100:
+            if draw is not None:
+                violations.append("sampling p=100 不应记录 draw")
+            if performed is not True:
+                violations.append("sampling p=100 必须 performed=True")
+            if matching_ledger:
+                violations.append("sampling p=100 不应产生 sampling ledger")
+            continue
+
+        try:
+            draw_value = float(draw)
+        except (TypeError, ValueError):
+            draw_value = float("nan")
+        if draw is None or isinstance(draw, bool) or not isfinite(draw_value):
+            violations.append("sampling stochastic decision 缺少合法 draw")
+        else:
+            draw = draw_value
+            if not 0 <= draw <= 100:
+                violations.append(f"sampling draw 超出 [0,100]：{draw!r}")
+            expected_performed = draw <= percent
+            if performed is not expected_performed:
+                violations.append(
+                    f"sampling performed 与 draw<=percent 不一致："
+                    f"{performed!r} != {expected_performed!r}"
+                )
+        if len(matching_ledger) != 1:
+            violations.append(
+                f"sampling stochastic decision ledger 数量不为 1：{ledger_key!r}"
+            )
+        elif (
+            draw is not None
+            and isfinite(matching_ledger[0].value)
+            and abs(matching_ledger[0].value - draw) > tolerance
+        ):
+            violations.append("sampling draw 与 RandomSampleLedger value 不一致")
+
+        if matching_ledger:
+            ledger = matching_ledger[0]
+            if not isfinite(ledger.value):
+                violations.append("sampling ledger value 非有限数")
+            if ledger.distribution != "uniform":
+                violations.append("sampling ledger 分布不是 uniform")
+            if tuple(ledger.parameters) != (0.0, 100.0):
+                violations.append("sampling ledger 参数不是 uniform(0,100)")
+            if ledger.entity_id != entity_id:
+                violations.append("sampling ledger entity identity 不一致")
+            if record.visit_index is not None and ledger.occurrence_index != record.visit_index:
+                violations.append("sampling ledger occurrence 不等于 visit_index")
+            if entity_id is not None and record.visit_index is not None:
+                material = (
+                    f"{result.seed}\0{_SAMPLING_STREAM}\0{entity_id}\0"
+                    f"{record.visit_index}"
+                ).encode()
+                expected_seed = int.from_bytes(
+                    hashlib.sha256(material).digest()[:16], "big"
+                )
+                if ledger.derived_seed != expected_seed:
+                    violations.append("sampling ledger derived seed 不一致")
+                expected_value = random.Random(expected_seed).uniform(0.0, 100.0)
+                if isfinite(ledger.value) and abs(ledger.value - expected_value) > tolerance:
+                    violations.append("sampling ledger value 与派生随机流不一致")
+
+    # Any sampling ledger must be justified by a stochastic decision. This
+    # catches both an extra random draw and a ledger entry moved to p=100.
+    actual_ledger_keys = [item.identity for item in sampling_ledger]
+    if len(actual_ledger_keys) != len(set(actual_ledger_keys)):
+        violations.append("sampling RandomSampleLedger identity 重复")
+    for identity in actual_ledger_keys:
+        if identity not in expected_ledger_keys:
+            violations.append(f"sampling ledger 缺少对应 decision：{identity!r}")
+
+    # Entry events are an independent runtime witness.  A runtime that
+    # silently ignores sample_percent can still produce a plausible process
+    # trace, so every sampled LOT_RELEASE/ROUTE_ADVANCE identity must have
+    # exactly one decision.  Multiple entry records for one identity (for
+    # example transport-arrival and direct route advance variants) are
+    # intentionally deduplicated here.
+    entry_identities = {
+        _sampling_operation_key(record)
+        for record in trace
+        if record.event_type in {"LOT_RELEASE", "ROUTE_ADVANCE"}
+        and (
+            (operation := scenario_operation(record)) is not None
+            and operation.sample_percent is not None
+        )
+    }
+    for identity in entry_identities:
+        matching_decisions = decisions_by_key.get(identity, ())
+        if len(matching_decisions) != 1:
+            violations.append(
+                f"sampling operation entry 缺少唯一 decision："
+                f"{identity!r} ({len(matching_decisions)})"
+            )
+
+    # Route witnesses also expose omissions at an intermediate sampled step:
+    # a direct step 1 -> step 3 advance proves that step 2 was visited, even
+    # though a skipped step never emits its own ROUTE_ADVANCE.
+    witness_events = {
+        "LOT_RELEASE", "ROUTE_ADVANCE", "PROCESS_START",
+        "SAMPLING_DECISION", "OPERATION_SKIPPED", "TRANSPORT_START",
+        "TRANSPORT_MISSING", "LOT_COMPLETE",
+    }
+    trace_by_lot: dict[str, list[TraceRecord]] = {}
+    for record in trace:
+        if record.lot_id is not None and record.event_type in witness_events:
+            trace_by_lot.setdefault(record.lot_id, []).append(record)
+    indices_by_operations: dict[int, dict[tuple[str, int], int]] = {}
+    for lot_id, records in trace_by_lot.items():
+        if not any(record.event_type == "LOT_RELEASE" for record in records):
+            continue
+        lot_spec = lots_by_id.get(lot_id)
+        if lot_spec is None:
+            continue
+        operations = lot_spec.operations
+        index_by_key = indices_by_operations.get(id(operations))
+        if index_by_key is None:
+            index_by_key = {
+                (operation.route_id, operation.step_id): index
+                for index, operation in enumerate(operations)
+            }
+            indices_by_operations[id(operations)] = index_by_key
+        reached = max(
+            (
+                index_by_key[(record.route_id, record.step_id)]
+                for record in records
+                if (record.route_id, record.step_id) in index_by_key
+            ),
+            default=0,
+        )
+        if any(record.event_type == "LOT_COMPLETE" for record in records):
+            reached = len(operations) - 1
+        initial = getattr(lot_spec, "initial_operation_index", 0)
+        for operation in operations[initial : reached + 1]:
+            if operation.sample_percent is None:
+                continue
+            key = (lot_id, operation.route_id, operation.step_id, 0)
+            if key not in decisions_by_key:
+                violations.append(
+                    f"sampling route witness 缺少 decision：{key!r}"
+                )
+
+    downstream_by_key: dict[tuple[Any, ...], list[TraceRecord]] = {}
+    for record in trace:
+        if record.event_type in {
+            "ROUTE_ADVANCE", "PROCESS_START", "TRANSPORT_START",
+            "TRANSPORT_MISSING",
+        }:
+            downstream_by_key.setdefault(_sampling_operation_key(record), []).append(
+                record
+            )
+    for decision in decisions:
+        key = _sampling_operation_key(decision)
+        for record in downstream_by_key.get(key, ()):
+            if (
+                decision.sim_time > record.sim_time + tolerance
+                or decision.event_seq >= record.event_seq
+            ):
+                violations.append(
+                    f"sampling decision 晚于 queue/transport/process：{key!r}"
+                )
+
+    # A failed decision has one and only one same-time skip. A successful
+    # decision has no skip. Reverse matching catches orphan skip records too.
+    false_decisions: set[tuple[tuple[Any, ...], float]] = set()
+    true_decisions: set[tuple[tuple[Any, ...], float]] = set()
+    skipped_by_key: dict[tuple[Any, ...], list[TraceRecord]] = {}
+    for record in skipped:
+        skipped_by_key.setdefault(_sampling_operation_key(record), []).append(record)
+    for record in decisions:
+        marker = (_sampling_operation_key(record), record.sim_time)
+        if record.sampling_performed is False:
+            false_decisions.add(marker)
+        elif record.sampling_performed is True:
+            true_decisions.add(marker)
+    for marker in false_decisions:
+        key, sim_time = marker
+        matches = [
+            record for record in skipped_by_key.get(key, ())
+            if abs(record.sim_time - sim_time) <= tolerance
+        ]
+        if len(matches) != 1:
+            violations.append(
+                f"false sampling decision 对应 OPERATION_SKIPPED 数量错误："
+                f"{key!r}@{sim_time} ({len(matches)})"
+            )
+        else:
+            decision = next(
+                record for record in decisions_by_key[key]
+                if abs(record.sim_time - sim_time) <= tolerance
+            )
+            skipped_record = matches[0]
+            if (
+                skipped_record.sampling_percent != decision.sampling_percent
+                or skipped_record.sampling_draw != decision.sampling_draw
+                or skipped_record.sampling_performed is not False
+                or skipped_record.sampling_entity_id != decision.sampling_entity_id
+                or skipped_record.event_seq <= decision.event_seq
+            ):
+                violations.append(
+                    f"OPERATION_SKIPPED payload/order 与 decision 不一致：{key!r}"
+                )
+    for marker in true_decisions:
+        key, sim_time = marker
+        if any(
+            abs(record.sim_time - sim_time) <= tolerance
+            for record in skipped_by_key.get(key, ())
+        ):
+            violations.append(f"true sampling decision 不得对应 skip：{key!r}@{sim_time}")
+    for record in skipped:
+        marker = (_sampling_operation_key(record), record.sim_time)
+        if marker not in false_decisions:
+            violations.append(
+                f"OPERATION_SKIPPED 缺少同刻 false sampling decision："
+                f"{_sampling_operation_key(record)!r}@{record.sim_time}"
+            )
+
+    # A skipped operation is a route transition, never a real process. The
+    # operation key includes visit so a future rework visit remains auditable.
+    skipped_keys = {_sampling_operation_key(record) for record in skipped}
+    for record in trace:
+        if record.event_type in {"PROCESS_START", "PROCESS_FINISH"} and (
+            _sampling_operation_key(record) in skipped_keys
+        ):
+            violations.append(
+                f"skipped operation 出现 {record.event_type}："
+                f"{_sampling_operation_key(record)!r}"
+            )
+    for interval in result.processing_intervals:
+        key = (interval.lot_id, interval.route_id, interval.step_id, 0)
+        if key in skipped_keys:
+            violations.append(f"skipped operation 出现 processing interval：{key!r}")
+
+    # Provenance is checked only when sampling is in scope. Existing legacy
+    # scenarios have no sampling operations and therefore no sampling runtime
+    # block to validate.
+    sampled_operations = [
+        operation
+        for source in (*scenario.lots, *scenario.release_templates)
+        for operation in source.operations
+        if getattr(operation, "sample_percent", None) is not None
+    ]
+    runtime = result.provenance.simulation_config.get("sampling_runtime")
+    if sampled_operations or decisions or sampling_ledger:
+        if not isinstance(runtime, Mapping):
+            violations.append("provenance sampling runtime 缺失")
+        else:
+            if runtime.get("schema_version") != _SAMPLING_RUNTIME_SCHEMA_VERSION:
+                violations.append("provenance sampling runtime schema 不一致")
+            if runtime.get("id") != _SAMPLING_RUNTIME_ID:
+                violations.append("provenance sampling runtime id 不一致")
+            boundary = runtime.get("supported_boundary")
+            if not isinstance(boundary, Mapping):
+                violations.append("provenance sampling runtime boundary 缺失")
+            else:
+                expected_boundary = {
+                    "decision_point": "operation_entry_before_dispatch_and_transport",
+                    "scope": "per_lot",
+                    "explicit_percent_range": "(0,100]",
+                    "unconfigured": "always_perform_without_decision",
+                    "percent_100": "perform_without_random_draw",
+                    "rework_visits": "unsupported_visit_0_only",
+                }
+                for name, expected in expected_boundary.items():
+                    actual = boundary.get(name)
+                    if actual != expected:
+                        violations.append(
+                            f"provenance sampling runtime boundary {name} 不一致"
+                        )
+            if runtime.get("schema_version") == _SAMPLING_RUNTIME_SCHEMA_VERSION:
+                random_streams = result.provenance.simulation_config.get(
+                    "sampling_random_streams"
+                )
+                if not isinstance(random_streams, Mapping):
+                    violations.append("provenance sampling random streams 缺失")
+                else:
+                    expected_streams = {
+                        "decision": _SAMPLING_STREAM,
+                        "identity": "lot_id+route_id+step_id+visit_index",
+                        "draw": "uniform(0,100), draw<=sample_percent",
+                    }
+                    for name, expected in expected_streams.items():
+                        if random_streams.get(name) != expected:
+                            violations.append(
+                                f"provenance sampling random streams {name} 不一致"
+                            )
+    return violations
 
 
 def recompute_trace_metrics(
@@ -435,5 +870,9 @@ def audit_result_invariants(
         violations.append("transport started_count 与 trace 不一致")
     if trace_transport_completed != result.transport_metrics.completed_count:
         violations.append("transport completed_count 与 trace 不一致")
+
+    violations.extend(
+        _audit_sampling_invariants(result, scenario, tolerance=tolerance)
+    )
 
     return ResultInvariantAudit(tuple(violations))

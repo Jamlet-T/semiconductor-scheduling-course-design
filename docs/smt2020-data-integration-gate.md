@@ -1,25 +1,25 @@
 # SMT2020 Data Integration Gate
 
-审计日期：2026-09-23
-本轮起点：`ec5663acce5fc9827188444325ca5e5572b032ca`（transport 闭环提交）；release 变更在同一 PR 分支验收
-Simulation Contract：`0.1.4`
+审计日期：2026-09-25
+本轮起点：sampling runtime 迭代前已通过的 release 闭环提交；最终 Git commit 以本轮验收记录为准
+Simulation Contract：`0.1.5`
 Policy Contract：`0.1.1`
-Loader Contract：`0.1.3`
+Loader Contract：`0.1.4`
 
 ## 1. Executive conclusion
 
 **SMT2020 Data Integration Gate = `not_passed_gaps`。**
 
-当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运 validation-slice smoke 和受限 release validation slice。两套 raw 数据跨文件引用均无 ERROR。最近两轮先后关闭 `DI_UNSUPPORTED_TRANSPORT_RUNTIME` 与 `DI_UNSUPPORTED_RELEASE_TEMPLATES`，并补强 StepPercent/RWKTYPE/RWKSTEP 的静态完整性校验；Simulation Contract `0.1.4` 下全量 182 项测试及 M1/Runtime/MC 定向回归通过。
+当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运/release 的受限 validation slice和 sampling 判定诊断 slice。两套 raw 数据跨文件引用均无 ERROR。`StepPercent` 已进入 immutable Scenario 和 operation-entry runtime，并具备独立 skip trace、稳定随机身份、provenance 与审计检查器。raw 中 4/18 个 sampled CQT target 全部 p=100，stochastic endpoint 为 0，因此实际 sampling profile 已闭环；诊断 slice 仍不证明完整物理 duration。
 
-Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、sampling、rework、setup MINRUN、多 calendar attachment；同时 raw 不提供 `B_target/T_max`，正式场景需要显式版本化配置。已关闭的 processing distribution、PTPER、exponential failure、transport 与受限 release profile 不会降低其余 6 类 blocker 的严重性；完整加载因此仍有意返回 `scenario=None`，不能通过取均值、预展开或忽略字段伪造可执行 Scenario。release 的真实支持边界仅为 `fixed_horizon + constant RDIST + LOTSPERRPT=1`。
+Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、rework、setup MINRUN、多 calendar attachment；同时 raw 不提供 `B_target/T_max`，正式场景需要显式版本化配置。全部显式 sampled 工序（221/955）所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`，sampling slice 没有执行这两段时长，因此 sampling blocker 已关闭但 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保留。完整加载仍有意返回 `scenario=None`；当前共 5 类 blocker。
 
 ## 2. 实际模型和 manifest
 
 | Model | Files | Manifest hash | Dataset version |
 | --- | ---: | --- | --- |
-| SMT2020_HVLM | 12 | `87ce2cf364f5ccd738a8349c95deaa9d26ea1e83aadf47a499ee897906f36d73` | `SMT2020_HVLM@sha256:87ce...6d73` |
-| SMT2020_LVHM | 20 | `fe1ea708721ecabe3b8eaad27b96e2172c88c3049b97bd92d0ee0e14e0e1514e` | `SMT2020_LVHM@sha256:fe1e...514e` |
+| SMT2020_HVLM | 12 | `8b5ad109d1052dff53c4354f4567a71b84c27b2badf159105194e46cde4a8cd7` | `SMT2020_HVLM@sha256:8b5ad109d1052dff53c4354f4567a71b84c27b2badf159105194e46cde4a8cd7` |
+| SMT2020_LVHM | 20 | `80c8ccc08aa8f3ed5338cbb27af4db20c82deeca24c5fa060b57268ca3ae247c` | `SMT2020_LVHM@sha256:80c8ccc08aa8f3ed5338cbb27af4db20c82deeca24c5fa060b57268ca3ae247c` |
 
 绝对路径与加载时间不参与 hash。测试已验证不同目录、不同文件创建/枚举顺序产生相同 logical hash，内容改变则 hash 改变。
 
@@ -39,7 +39,11 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Batch operations | 28 | 135 |
 | CQT constraints / cross-step | 66 / 17 | 264 / 83 |
 | Dedication constraints | 18 | 73 |
-| StepPercent field / stochastic sampling operations | 221 / 149 | 955 / 662 |
+| StepPercent field / stochastic / 100% operations | 221 / 149 / 72 | 955 / 662 / 293 |
+| Initial WIP currently at explicit sampling step | 98 | 75 |
+| Sampling operations overlapping rework | 14 | 52 |
+| Sampled CQT target / stochastic sampled CQT target | 4 / 0 | 18 / 0 |
+| Explicit sampling operations using load/unload tool templates | 221 | 955 |
 | Rework operations | 14 | 52 |
 | Cascading/interval operations | 379 | 1668 |
 | Setup transitions / group members | 13 / 9 | 13 / 9 |
@@ -66,7 +70,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | PM | calendar/pieces/attach/FOA 已解析 | 多 calendar/机与历史 counter 缺口 | BLOCKER + warning |
 | Transport | `Fab→Fab uniform(7.5,2.5)` 与 route location pairs 已解析 | 外生无容量 `TRANSPORTING/ARRIVE`、CRN、CQT、fixed horizon、missing-pair audit 已验证 | PASS-static/runtime；未配置 pair warning |
 | Release | `START/RDIST/REPEAT/RUNITS/RPT#/LOTSPERRPT/DUE` 与 template namespace 已解析 | fixed-horizon 惰性投放、index-0 repeat、namespaced stable ID、due offset 平移已形成受限 slice；仅 constant RDIST + LOTSPERRPT=1 | PASS-limited；非支持组合显式保留 |
-| Sampling | StepPercent 已解析且范围 `(0,100]` 已验证 | Bernoulli skip 未实现 | BLOCKER |
+| Sampling | StepPercent 已解析；显式/随机/100%、initial WIP、rework/CQT/load-unload overlap 已 reconciliation；CQT targets 全为 p=100 | operation-entry Bernoulli、skip trace、CRN、initial WIP 与 p100-CQT integration 已验证；p<100 endpoint 显式拒绝 | PASS-runtime / diagnostic slice |
 | Rework | 三字段成组、scope、百分比与严格回跳引用已验证；真实 scope 均为 `lot` | visit/route loop 未实现 | BLOCKER |
 | Cascade | STNCAP/PartInterval/BatchInterval 已解析 | lot finish 与 machine release 双时刻未实现 | BLOCKER |
 | Load/Unload | 每机 LTIME/ULTIME 已转分钟 | 尚未进入占用时间 | BLOCKER |
@@ -85,7 +89,6 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Code | HVLM affected | LVHM affected | Required fix |
 | --- | ---: | ---: | --- |
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing |
-| `DI_UNSUPPORTED_SAMPLING` | 149 | 662 | stable sampling stream and skip trace；StepPercent=100 不产生随机跳步 |
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint |
 | `DI_MISSING_BATCH_DECISION_CONFIG` | 28 | 135 | explicit versioned B_target/T_max config |
@@ -144,13 +147,27 @@ audit: due-release offset invariant; PART/ORDER/PRIOR/PIECES/HOTLOT/source-row p
 randomness: constant release creates no release-stream ledger sample
 ```
 
-这些运行证明受限记录上的 parser→static model→Scenario schema→`simulate()`→manifest provenance 链条，以及 configured/missing transport pair 的契约行为。加工/transport slice 有意不装配 machine load/unload、calendar attachment、release template 和 initial WIP；release slice 只验证受限 release profile，不比较策略、不生成正式 KPI 结论、不验证 full HVLM/LVHM。release 证据详见 [SMT2020 Release Runtime Audit](smt2020-release-runtime-audit.md)。
+Sampling smoke（FIFO、seed 42；真实 initial WIP 单工序闭包）：
+
+```text
+models: SMT2020_HVLM / SMT2020_LVHM
+selector: provenance 中保存 validation_sampling_operation=(route_id, step_id)
+profile: per_lot + Fab；无 batch/setup/cascade/rework；p<100 endpoint 被拒绝，p100 CQT endpoint 可执行；不执行 tool LOAD/UNLOAD duration
+stochastic case: 0 < StepPercent < 100；每次 run 恰有一条 sampling decision，随机判定恰有一条 sampling ledger
+100% case: SAMPLING_DECISION(performed=true)，无 sampling ledger
+initial state: 使用真实 initial WIP lot/source row，在 t=0 判定当前 operation
+audit: decision/skip/ledger/provenance 与“跳步不加工、不累计 PM wafer”不变量
+scope: sampling decision/mapping diagnostic only, not physical-duration closure
+warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload minutes
+```
+
+这些运行证明受限记录上的 parser→static model→Scenario schema→`simulate()`→manifest provenance 链条。sampling slice 只诊断 sampling decision/mapping；它排除 rework 并省略真实 tool load/unload duration，因此不是物理闭包，不比较策略、不生成正式 KPI 结论，也不证明 full HVLM/LVHM 可执行。p100 sampled CQT target 的无跳步集成由独立 micro/integration tests 验证。
 
 ## 8. PySCFabSim 可比项与差异
 
 可比项包括产品/route 长度、tool family、release 参数、`uniform(m,w)` 参数解释和 selected FIFO smoke 的输入结构。当前 loader 的原始计数与仓库既有静态审计一致；`uniform` 的 mean/full-width 解释继续引用固定 PySCFabSim commit 作为 D 级证据。
 
-本轮没有把 PySCFabSim 输出当作 ground truth，也没有做 full-fab FIFO trace 对齐：当前本地 runtime 尚不能表达完整 cascade/sampling/rework/multi-calendar/route-branching 组合，此时比较终态 KPI 会混入模型差异。受限 release profile 已单独闭合；主要差异是本 loader 对仍不支持字段产生 BLOCKER 并拒绝构造完整 Scenario，参考实现能够运行也不代表其事件语义自动满足本项目 Contract。
+本轮没有把 PySCFabSim 输出当作 ground truth，也没有做 full-fab FIFO trace 对齐。固定参考实现支持把 `StepPercent` 解释为“执行该工序的百分比”并在派工可见前判断；本项目进一步以 raw 证据确认 CQT target 全为 p=100，不需要发明 skip-CQT 语义。参考实现能运行仍不能替代组合契约。当前本地 runtime 尚不能表达完整 cascade/rework/multi-calendar/route-branching 组合，此时比较终态 KPI 会混入模型差异。
 
 ## 9. Modeling assumptions and unsupported features
 
@@ -161,7 +178,9 @@ randomness: constant release creates no release-stream ledger sample
 - transport 被建模为外生无资源延迟：E；runtime 已执行，未建模 OHT/AMHS 容量；
 - `fromto` 未配置 pair 按零时长执行并显式计数：已冻结本地规则；真实 route 中此类转移 HVLM 67、LVHM 289 次，不能解释为已知真实物流耗时；
 - `B_target/T_max`：raw 不提供，未来必须由版本化 experiment/loader config 给出；
-- load-unload/cascade、sampling/rework、setup MINRUN、batch decision config、multi-calendar attachment：当前明确 unsupported，仍列为 6 类 BLOCKER。
+- sampling：None/100%/随机百分比、operation-entry skip、initial WIP、CRN 与 provenance 已验证；raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0；真实 sampling blocker 已关闭；
+- p<100 CQT/Dedication endpoint：当前 raw 未出现，Scenario 显式拒绝；若未来出现必须重新进入 blocker，而非 silent fallback；
+- load-unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment：仍列为 5 类 BLOCKER。
 - release template：`DI_UNSUPPORTED_RELEASE_TEMPLATES` 已关闭，但仅对 `fixed_horizon + constant RDIST + LOTSPERRPT=1` 声明支持；非 constant、`LOTSPERRPT>1`、非 fixed-horizon 或其他未验证组合仍显式 unsupported。
 
 没有 C 级论文/官方资料被单独用于闭合本轮关键语义。
@@ -179,11 +198,11 @@ randomness: constant release creates no release-stream ledger sample
 | DI-E07 | Dedication mapping | 91 constraints、refs closed | PASS | initial history warning |
 | DI-E08 | Failure mapping | exponential sampler + calendar/attachments parsed | GAP | multi-calendar runtime |
 | DI-E09 | PM mapping | calendar/pieces/FOA parsed | GAP | multi-calendar + initial counter |
-| DI-E10 | Transport/Release/Sampling/Rework/Cascade | transport runtime + real configured/missing slices + restricted release validation slice；其余 fields audited | GAP | transport/release PASS-limited；sampling/rework/cascade 仍实际启用 |
+| DI-E10 | Transport/Release/Sampling/Rework/Cascade | transport/release/sampling runtime + sampling 判定诊断 slice；其余 fields audited | GAP | sampling PASS；真实 load/unload、rework/cascade 仍实际启用 |
 | DI-E11 | Initial WIP unknown history auditable | four explicit warnings and counts | PASS | historical facts remain unrecoverable |
 | DI-E12 | raw→parsed→Scenario references | zero ERROR; actual-data tests | PASS-static | full executable Scenario blocked |
 | DI-E13 | Real-data provenance | manifest/raw hashes embedded in smoke result | PASS |
-| DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release FIFO slices | PASS-limited | compatibility only |
-| DI-E15 | BLOCKER count=0 | 6 blocker codes/model；release blocker 已关闭 | GAP | count > 0 |
+| DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release slices + sampling decision diagnostic | PASS-limited | sampling slice 不是 physical-duration closure |
+| DI-E15 | BLOCKER count=0 | 5 blocker codes/model；sampling blocker 已关闭 | GAP | count > 0 |
 
-最终状态：`not_passed_gaps`。Runtime Reliability、M1 与 MC01～MC08 在本轮回归后保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。当前剩余 6 类 blocker：load/unload/cascade、sampling、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**；release template 不再作为 blocker，但其支持边界和未验证组合必须保持显式。
+最终状态：`not_passed_gaps`。本地全量回归 `211 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。

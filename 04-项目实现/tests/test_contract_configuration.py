@@ -75,7 +75,7 @@ class ContractConfigurationTests(unittest.TestCase):
             SMT2020_LOADER_CONTRACT_VERSION,
         )
         self.assertEqual(gate["loader_version"], SMT2020_LOADER_VERSION)
-        self.assertEqual(gate["blocker_count_per_model"], 6)
+        self.assertEqual(gate["blocker_count_per_model"], 5)
         self.assertEqual(gate["status"], "not_passed_gaps")
         self.assertFalse(gate["formal_experiments_allowed"])
         self.assertFalse(gate["optimizer_training_allowed"])

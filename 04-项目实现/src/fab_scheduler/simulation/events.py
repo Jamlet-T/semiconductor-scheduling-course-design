@@ -8,7 +8,7 @@ from typing import Any
 
 
 class EventPriority(IntEnum):
-    """Simulation Contract 0.1.4 的同刻事件优先级。"""
+    """Simulation Contract 0.1.5 的同刻事件优先级。"""
 
     PROCESS_FINISH = 10
     REPAIR_FINISH = 20
@@ -127,6 +127,10 @@ class TraceRecord:
     wafer_counter_after: int | None = None
     wafer_threshold: int | None = None
     processed_wafers: int | None = None
+    sampling_percent: float | None = None
+    sampling_draw: float | None = None
+    sampling_performed: bool | None = None
+    sampling_entity_id: str | None = None
     state_before: str | None = None
     state_after: str | None = None
     cause_event_seq: int | None = None

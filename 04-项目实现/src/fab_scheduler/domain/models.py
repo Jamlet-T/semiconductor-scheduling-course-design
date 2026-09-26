@@ -311,6 +311,7 @@ class OperationSpec:
     processing_basis: ProcessingBasis = "per_lot"
     part_interval_minutes: float | None = None
     batch_interval_minutes: float | None = None
+    sample_percent: float | None = None
 
     def __post_init__(self) -> None:
         if self.step_id < 1:
@@ -338,6 +339,24 @@ class OperationSpec:
             raise ValueError("part_interval_minutes 必须为正")
         if self.batch_interval_minutes is not None and self.batch_interval_minutes <= 0:
             raise ValueError("batch_interval_minutes 必须为正")
+        if self.sample_percent is not None:
+            if (
+                isinstance(self.sample_percent, bool)
+                or not isinstance(self.sample_percent, (int, float))
+                or not isfinite(float(self.sample_percent))
+                or not 0 < float(self.sample_percent) <= 100
+            ):
+                raise ValueError("sample_percent 必须为 (0, 100] 内的有限数")
+            if self.processing_basis != "per_lot":
+                raise ValueError("sampling runtime 仅支持 per_lot")
+            if self.batch_spec is not None:
+                raise ValueError("sampling operation 不支持 batch_spec")
+            if self.required_setup is not None or self.setup_override_minutes is not None:
+                raise ValueError("sampling operation 不支持 setup")
+            if self.part_interval_minutes is not None:
+                raise ValueError("sampling operation 不支持 part_interval_minutes")
+            if self.batch_interval_minutes is not None:
+                raise ValueError("sampling operation 不支持 batch_interval_minutes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,6 +629,20 @@ class Scenario:
                     f"CQT {constraint.constraint_id} 引用了 route 中不存在的 "
                     f"step {sorted(missing)}"
                 )
+            if any(
+                operation.sample_percent is not None
+                and operation.sample_percent < 100
+                and operation.route_id == constraint.route_id
+                and operation.step_id in {
+                    constraint.source_step_id,
+                    constraint.target_step_id,
+                }
+                for source in operation_sources
+                for operation in source.operations
+            ):
+                raise ValueError(
+                    "随机 sampling step 不得作为 CQT source/target endpoint"
+                )
         dedication_ids = [
             constraint.dedication_id
             for constraint in self.dedication_constraints
@@ -631,6 +664,19 @@ class Scenario:
                 raise ValueError(
                     f"Dedication {constraint.dedication_id} 引用了 route 中不存在的 "
                     f"step {sorted(missing)}"
+                )
+            if any(
+                operation.sample_percent is not None
+                and operation.route_id == constraint.route_id
+                and operation.step_id in {
+                    constraint.source_step_id,
+                    constraint.target_step_id,
+                }
+                for source in operation_sources
+                for operation in source.operations
+            ):
+                raise ValueError(
+                    "sampling step 不得作为 Dedication source/target endpoint"
                 )
         failure_machines = [spec.machine_id for spec in self.failure_specs]
         if len(failure_machines) != len(set(failure_machines)):

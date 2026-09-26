@@ -16,6 +16,7 @@
 - [SMT2020 Loader Contract](smt2020-loader-contract.md)：manifest、raw 字段到静态领域模型/Scenario 的映射及 blocker 规则。
 - [SMT2020 Transport Runtime Audit](smt2020-transport-runtime-audit.md)：搬运事件、随机身份、真实 route pair 与缺失 pair 审计闭环。
 - [SMT2020 Release Runtime Audit](smt2020-release-runtime-audit.md)：release template 的 raw 证据、惰性投放、namespaced stable ID、due 平移和受限支持边界。
+- [SMT2020 Sampling Runtime Audit](smt2020-sampling-runtime-audit.md)：StepPercent 的 operation-entry skip、CRN、p100-CQT 边界、真实 initial-WIP 判定诊断 slice，以及独立的 load/unload 限制。
 - [SMT2020 Data Integration Gate](smt2020-data-integration-gate.md)：真实数据 reconciliation、validation smoke 与 DI-E01～DI-E15 判定。
 
-M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。SMT2020 Data Integration Gate 仍在 Runtime Compatibility Gap Closure；processing distribution/PTPER、exponential failure、transport 与受限 release profile 已形成 raw→Scenario→runtime→provenance 闭环，release blocker 已关闭，当前仍有 6 类 blocker，状态保持 `not_passed_gaps`。release 真实支持边界仅为 `fixed_horizon + constant RDIST + LOTSPERRPT=1`，非支持组合不得宣称支持。Simulation Contract `0.1.4` 下全量 182 项测试与 M1/Runtime/MC 定向回归均通过；没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。SMT2020 数据随仓库位于根目录 `datasets/`，已纳入版本控制的数据保持内容只读、原始字节不可变；派生数据写入 `runs/` 或 `artifacts/`。原始教学资料仍需通过教师或组内授权渠道取得，不在公开仓库保存。
+M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。processing distribution/PTPER、exponential failure、transport、受限 release 与真实 sampling profile 已形成各自证据链。sampled CQT targets（HVLM 4、LVHM 18）全为 p100，stochastic endpoint 为 0，因此 sampling blocker 已关闭；sampling 诊断 slice 未执行全部 sampled 工序共有的 1 分钟 load/unload，故 load/unload blocker仍保留。Data Integration Gate 现有 5 类 blocker，状态保持 `not_passed_gaps`；没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。当前契约为 Simulation `0.1.5`、Policy `0.1.1`、Loader `0.1.4`、Data `0.1.3`。

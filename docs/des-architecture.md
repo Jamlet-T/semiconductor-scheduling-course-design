@@ -1,7 +1,7 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.4`
-当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release profile；MC01～MC08 保持 verified
+适用版本：Simulation Contract `0.1.5`
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release/sampling profile；MC01～MC08 保持 verified
 
 锁定能力：正式 SMT2020 loader、优化器
 
@@ -17,6 +17,7 @@
 | CQT runtime | `simulation/cqt.py` | 独立约束索引、活动时钟、闭合记录、slack/risk 与期末暴露 |
 | Dedication runtime | `simulation/dedication.py` | 物理机绑定、硬可行性过滤、生命周期与初始 WIP 缺口审计 |
 | PM runtime | `simulation/pm.py` | 日历 PM occurrence、wafer counter、pending/active 状态与独立随机流 |
+| Sampling runtime | `simulation/sampling.py` | operation-entry 判定、稳定 sampling identity，以及 None/100%/随机百分比边界 |
 | 随机流 | `simulation/random_streams.py` | 由 seed/stream/entity/occurrence 派生随机量 |
 | provenance | `simulation/provenance.py` | Contract、数据、commit、seed、配置、策略和终止条件 |
 | 派工接口 | `policies/base.py` | `DispatchPolicy.select(state, feasible_actions)` |
@@ -69,7 +70,8 @@ DISPATCH_BARRIER priority=60
 
 ```text
 Lot:
-UNRELEASED → QUEUED → RESERVED → PROCESSING → QUEUED ... → COMPLETED
+UNRELEASED → [SAMPLING_DECISION] → TRANSPORTING/QUEUED
+→ RESERVED → PROCESSING → [SAMPLING_DECISION] → TRANSPORTING/QUEUED ... → COMPLETED
 
 Machine:
 IDLE → PROCESSING → IDLE
@@ -114,13 +116,16 @@ Dedication 使用 `DedicationSpec(dedication_id, route_id, source_step_id, targe
 
 Failure 与 PM 共用 `_InterruptedActivity`、`activity_token`、暂停区间和 resume 路径。Calendar PM 可抢占 Setup、普通加工和整个 Batch；Wafer PM 只在真实完成后按 wafer 数置为 pending，并在下一派工前执行。每台 machine 同时只有一个 downtime owner，因此 PM finish 或 repair 只能释放自己拥有的停机。旧 completion 事件因 token 失效而无副作用。PM 与 Failure 的 occurrence、停机区间、计数和 provenance 分开记录。
 
-lot 完成一道工序时：
+lot 完成一道实际执行的工序时：
 
 1. 记录 `PROCESS_FINISH` 和设备占用区间；
 2. 设备回到 `IDLE`；
-3. 若有下一工序，记录 `ROUTE_ADVANCE` 并进入其队列；
-4. 否则记录 `LOT_COMPLETE`；
-5. 安排同刻 `DISPATCH_BARRIER`。
+3. 若有下一工序，进入 operation-entry sampling；显式值先写 `SAMPLING_DECISION`；
+4. 未命中则写 `OPERATION_SKIPPED` 并继续扫描；命中后只对最终实际执行的目标发起一次 transport/入队；
+5. 若无余下实际工序则同刻记录 `LOT_COMPLETE`；
+6. 安排同刻 `DISPATCH_BARRIER`。
+
+release lot 和 initial WIP 在进入首个/当前 operation 前也走同一 sampling 入口。`sample_percent=None` 不写 decision，显式 100% 写 decision 但不消费随机量，随机百分比按 `lot_id+route_id+step_id+visit_index` 派生。跳过的 operation 不形成 feasible action、不占 machine、不抽 processing duration，也不触发完成 wafer 的 PM 计数。p100 sampled step 可作为 CQT endpoint；随机 p<100 CQT endpoint 与所有 sampled Dedication endpoint 主动拒绝。rework 未实现，因此 visit 只允许 0。
 
 策略只接收已经通过资格过滤的 `DispatchAction`。内核按 machine ID 稳定遍历，并在每次选择后立即原子预留 lot 和 machine，防止一个 lot 被多台设备重复占用。
 
@@ -147,10 +152,11 @@ cqt_actual_duration, cqt_slack, cqt_violation, cqt_excess_duration,
 dedication_id, dedication_source_step_id, dedication_target_step_id,
 dedication_bound_machine_id, dedication_established_at,
 dedication_released_at, dedication_audit_reason,
+sampling_percent, sampling_draw, sampling_performed, sampling_entity_id,
 state_before, state_after, cause_event_seq
 ```
 
-`key_trace()` 保留人工核算所需的 `LOT_RELEASE / DISPATCH / SETUP_START / SETUP_FINISH / BATCH_TIMEOUT / BATCH_FORMED / BATCH_START / BATCH_FINISH / PROCESS_START / PROCESS_FINISH / CQT_OPEN / CQT_CLOSE / CQT_VIOLATION / DEDICATION_BIND / DEDICATION_RELEASE / DEDICATION_HISTORY_UNKNOWN / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER` 和 `BATCH_TIMEOUT_STALE`。
+`key_trace()` 保留人工核算所需的 `LOT_RELEASE / SAMPLING_DECISION / OPERATION_SKIPPED / DISPATCH / SETUP_START / SETUP_FINISH / BATCH_TIMEOUT / BATCH_FORMED / BATCH_START / BATCH_FINISH / PROCESS_START / PROCESS_FINISH / CQT_OPEN / CQT_CLOSE / CQT_VIOLATION / DEDICATION_BIND / DEDICATION_RELEASE / DEDICATION_HISTORY_UNKNOWN / ROUTE_ADVANCE / LOT_COMPLETE`。完整 trace 仍包含 `DISPATCH_BARRIER` 和 `BATCH_TIMEOUT_STALE`。
 
 当前 KPI：
 
@@ -201,5 +207,6 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | PM | VERIFIED | MC08 Calendar/Wafer PM、抢占恢复、计数、重叠、同刻优先级与 fixed horizon |
 | Transport | VERIFIED-LIMITED-SLICE | configured/missing pair、CRN、CQT、fixed horizon 与真实 HVLM/LVHM 两工序 slice |
 | SMT2020 release template | VERIFIED-LIMITED-SLICE | fixed-horizon 惰性投放、index-0 `RPT#`、namespaced stable ID、due 平移；仅 constant RDIST + LOTSPERRPT=1 |
+| SMT2020 sampling | VERIFIED-RUNTIME / DIAGNOSTIC-SLICE | None/100%/随机百分比、连续/末尾 skip、initial WIP、CRN、p100-CQT integration、provenance 与独立 audit；p<100 endpoint 拒绝，slice 不表达 raw tool load/unload duration |
 
-MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport 与 Release Template 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.4` 下全量 182 项测试及 M1/Runtime/MC 定向回归通过，M1 状态为 `passed`；Transport 与 release template blocker 已关闭（release 仅为受限 profile），但 SMT2020 Data Integration Gate 仍因另外 6 类 gap 为 `not_passed_gaps`，优化器继续禁用。完整结论见 `m1-closure-audit.md`、`smt2020-transport-runtime-audit.md` 和 `smt2020-release-runtime-audit.md`。
+MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport、Release Template 与 Sampling 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.5` 新增 sampling profile，但不改变 MC01～MC08 既有语义；M1 状态保持 `passed`。raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0，sampling blocker 已关闭；诊断 slice 没有执行全部 sampled 工序共有的 1 分钟 load/unload，故 Data Integration Gate 仍有 5 类 blocker、状态为 `not_passed_gaps`，优化器继续禁用。

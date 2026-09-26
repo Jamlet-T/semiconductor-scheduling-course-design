@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.3` 已完成静态数据链、真实加工/搬运 validation slice 和受限 release validation slice，以及 processing、exponential failure、transport 和 release runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.4` 已完成静态数据链、真实加工/搬运/release validation slice、sampling 判定诊断 slice，以及 processing、exponential failure、transport、release 和 sampling runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -56,12 +56,14 @@ Uniform[m - w/2, m + w/2]
 
 | 原始字段 | 内部结构 | 运行时语义 |
 | --- | --- | --- |
-| `StepPercent` | `OperationSpec.sample_percent` | 空值按 100；每个 lot/step/visit 使用 `sampling` 子流做一次 Bernoulli，未命中则产生 `OPERATION_SKIPPED` 并推进 |
+| `StepPercent` | `OperationSpec.sample_percent` | 空值映射为 `None` 并始终执行，不写 decision；显式百分数按下述 operation-entry 规则判定 |
 | `RWKSTEP` | `ReworkRule.return_step` | 返工命中后回到该路线 step |
 | `REWORK` | `ReworkRule.percent` | 百分数，例如 `1.8` 表示 1.8%，使用 `rework` 子流 |
 | `RWKTYPE=lot` | `ReworkRule.scope` | 以 lot 为判定单位 |
 
-同一 `(lot, source_step, visit)` 只抽样一次。返工会创建新的 visit；不能用 Python 容器遍历顺序决定随机量。
+受限 sampling runtime 的精确行为为：显式 `p=100` 写 `SAMPLING_DECISION(performed=true)`，但不写随机账本；`0<p<100` 使用 `sampling` 子流抽取 `uniform(0,100)`，`draw<=p` 才执行。判定发生在派工可见以及首段/下一段 transport 之前；内部状态可先标记 `QUEUED`，但判定完成前不得进入 feasible actions。未命中时同刻写 `OPERATION_SKIPPED` 并扫描下一工序，不占设备、不抽 processing duration、不累计 wafer-PM 完成量。连续跳步允许；若余下工序全部跳过，lot 同刻完成。初始 WIP 的当前 step 在 `t=0` 依同一规则判定。
+
+随机 identity 固定为 `(lot_id, route_id, step_id, visit_index)`，当前随机判定 profile 只支持无 rework 的 `visit_index=0`。返工是否按每次 visit 重抽以及 rework/dedication 的 visit 生命周期仍是 OPEN；不得依据旧的“每 visit”描述自行实现。raw 中 sampled CQT target 为 HVLM 4、LVHM 18，但逐条均为 `p=100`，stochastic sampled CQT target 为 0；p=100 不存在 skip 分支，允许按普通 CQT target 执行，因此 sampling blocker 关闭。未来 `0<p<100` endpoint 仍显式 unsupported。全部 221/955 条显式 sampled 工序所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`；sampling validation slice 不执行这两段物理时长，只验证抽样判定与映射，load/unload blocker 保留。
 
 ## 3. 设备、设备组与资格
 
@@ -259,7 +261,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.4",
+  "simulation_contract_version": "0.1.5",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,
@@ -285,6 +287,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运 validation slice 和受限 release validation slice 已由 Loader Contract `0.1.3` 实现。完整 raw SMT2020 → executable Scenario 仍因抽样/返工、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release validation slice 与受限 sampling 判定诊断 slice 已由 Loader Contract `0.1.4` 实现。真实 sampling profile 已闭合；完整 raw SMT2020 → executable Scenario 仍因 rework、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
 
-这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的剩余 6 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
+这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的剩余 5 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
