@@ -91,7 +91,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 
 | Code | HVLM affected | LVHM affected | Required fix |
 | --- | ---: | ---: | --- |
-| `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing |
+| `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing；详见 [级联语义审计](smt2020-cascade-semantic-audit.md) |
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop；详见 [返工语义审计](smt2020-rework-semantic-audit.md) |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint；详见 [语义审计](smt2020-setup-minrun-audit.md) |
 | `DI_MISSING_BATCH_DECISION_CONFIG` | 28 | 135 | explicit versioned B_target/T_max config |
@@ -209,4 +209,4 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 | DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release slices + sampling decision diagnostic | PASS-limited | sampling slice 不是 physical-duration closure |
 | DI-E15 | BLOCKER count=0 | 5 blocker codes/model；sampling blocker 已关闭 | GAP | count > 0 |
 
-最终状态：`not_passed_gaps`。本地全量回归 `230 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。
+最终状态：`not_passed_gaps`。本地全量回归 `233 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。

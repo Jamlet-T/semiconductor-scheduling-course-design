@@ -18,6 +18,7 @@
 - [SMT2020 Release Runtime Audit](smt2020-release-runtime-audit.md)：release template 的 raw 证据、惰性投放、namespaced stable ID、due 平移和受限支持边界。
 - [SMT2020 Sampling Runtime Audit](smt2020-sampling-runtime-audit.md)：StepPercent 的 operation-entry skip、CRN、p100-CQT 边界、真实 initial-WIP 判定诊断 slice，以及独立的 load/unload 限制。
 - [SMT2020 Rework Semantic Audit](smt2020-rework-semantic-audit.md)：返工 raw 关系、论文/固定参考的证据分层、sampling/dedication/initial-WIP 组合与仍保持的 rework blocker。
+- [SMT2020 Load / Unload / Cascade Semantic Audit](smt2020-cascade-semantic-audit.md)：级联双时点、真实 1+1 分钟装卸、参考实现尾段行为与分阶段验收边界。
 - [SMT2020 Multi-calendar Attachment Audit](smt2020-multi-calendar-attachment-audit.md)：303 条附件行到生产物理机的静态展开、受影响机台计数与尚未冻结的同机冲突语义。
 - [SMT2020 Setup MINRUN Audit](smt2020-setup-minrun-audit.md)：Implant_Gas 原始字段链、参考实现差异、初始历史缺失及运行时关闭条件。
 - [SMT2020 Data Integration Gate](smt2020-data-integration-gate.md)：真实数据 reconciliation、validation smoke 与 DI-E01～DI-E15 判定。
