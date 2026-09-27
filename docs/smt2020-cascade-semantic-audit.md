@@ -8,6 +8,16 @@
 
 下一步先实现并验收真实 **non-cascade load/unload** 的受限子链；即使该子链通过，也只可标记 `PASS-limited`，不能关闭整个 blocker。级联所需的尾段所有权、故障/PM 中断、同刻事件次序及指标审计另行冻结和实现。
 
+## Non-cascade 子链候选与契约边界
+
+真实 initial WIP 筛选结果：在 `STNCAP!=2`、`LTIME/ULTIME>0`、无 Part/BatchInterval、`per_lot`、无 setup/batch/sampling/rework/CQT/Dedication source，且非 CQT/Dedication/Rework target 的条件下，HVLM/LVHM 分别有 **416/417 个 lot**、**94/166 道唯一工序**。它们足以测试装载、纯加工、卸载的阶段占用；不是全部 raw 路线可执行的证据。
+
+两模型均有一条相同结构的真实相邻双工序候选：HVLM `WIP.txt:1387` 的 `Init_Lot_3_1361`，LVHM `WIP.txt:1063` 的 `Init_Lot_3_290`，当前均在 `r_3:18`；[route_3.txt:19](../datasets/SMT2020_HVLM/route_3.txt) 的 `DE_FE_1` 工序为 `uniform(135.234,6.7617) min / per_lot`，下一 [route_3.txt:20](../datasets/SMT2020_HVLM/route_3.txt) 的 `DE_FE_86` 为 `uniform(162.798,8.1399) min / per_lot`。两台模板均为 non-cascade、`LOAD=UNLOAD=1 min`，无上述其他工序机制。第一道工序的纯加工范围是 `131.85315–138.61485 min`，加两段装卸后是 `133.85315–140.61485 min`。双工序间若使用已有 `Fab→Fab` 外生搬运，必须另计 `U(6.25,8.75) min`，不得藏进装卸或加工时间。
+
+这两台真实工具仍挂有 Failure 和多条 wafer PM；真实 initial WIP 的历史 PM counter 也不可恢复。若先构造单/双工序验证 slice，必须在 audit/provenance 中逐项说明日历、其他合格机和历史状态的省略。该 slice 即使通过，也只能证明 non-cascade 子链；不能关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`。
+
+设计时还必须维持当前 Contract 的有效 `PROCESS_FINISH` 业务口径：MINRUN 成功 lot 计数、CQT source 开钟、Dedication target 释放、wafer-PM 完成计数和路线推进均绑定它。不能把它无声改名为“纯加工阶段结束”。non-cascade 可新增 `LOAD/PROCESS_CORE/UNLOAD` 的阶段状态和事件，并在卸载结束后触发原有 canonical `PROCESS_FINISH`；真正的 lot 完成与 machine 释放双时点仍仅属于待冻结的 cascade 语义。加工随机 realization 继续在实际进入加工阶段、已提交动作之后按稳定 identity 抽样一次，中断恢复不得重抽样。此段是下一版最小实现的契约边界说明，不表示 runtime 已实现。
+
 ## 原始数据与现有公式
 
 | 观测项 | HVLM | LVHM |

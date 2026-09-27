@@ -516,6 +516,16 @@ class SMT2020LoaderTests(unittest.TestCase):
                     values["max_calendar_pm_per_machine"],
                 )
                 self.assertEqual(stats["attachment_machine_count_distributions"], values["distributions"])
+                joint_counts: dict[tuple[int, int, int], int] = {}
+                for counts in stats["attachment_machine_counts_by_physical_machine"].values():
+                    key = (counts["failure"], counts["calendar_pm"], counts["wafer_pm"])
+                    joint_counts[key] = joint_counts.get(key, 0) + 1
+                expected_joint = (
+                    {(1, 0, 3): 692, (1, 2, 0): 148, (1, 3, 0): 203}
+                    if model == "SMT2020_HVLM" else
+                    {(1, 0, 3): 606, (1, 2, 0): 137, (1, 3, 0): 170}
+                )
+                self.assertEqual(joint_counts, expected_joint)
                 sample_machine, sample_counts = values["sample_machine"]
                 self.assertEqual(
                     stats["attachment_machine_counts_by_physical_machine"][sample_machine],

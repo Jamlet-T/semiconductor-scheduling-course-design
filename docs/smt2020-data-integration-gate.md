@@ -64,7 +64,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Product/Route/Operation | 完成，sequence/reference 已验证 | deterministic micro routes 已支持 | PASS-static |
 | Qualification | STNFAM→STNQTY→稳定 machine ID | Engine 已使用具体 machine | PASS |
 | Processing | uniform/PTPER/interval 全部保存 | uniform、per_lot/per_piece/per_batch runtime 已支持；interval/cascade 未实现 | PASS-partial / Cascade BLOCKER |
-| Setup | route override、transition、group/MINRUN 已保存 | transition 已支持；MINRUN 已有合成场景硬约束与 provenance，真实组合映射未闭环 | BLOCKER |
+| Setup | route override、transition、group/MINRUN 已保存 | transition 已支持；MINRUN 有合成硬约束，但真实 Implant 工序全部带 PartInterval/L/U，组合物理语义未闭环 | BLOCKER |
 | Batch | wafer min/max 与 criterion 已保存 | 显式 v1 配置 + 真实 initial-WIP target/timeout batch slice + 单次 per-batch 抽样已验证；slice 省略 L/U/calendar | PASS-limited；完整物理由其他 blocker 阻塞 |
 | CQT | source/target/unit 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
 | Dedication | source/target/physical qualification 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
@@ -93,7 +93,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | --- | ---: | ---: | --- |
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing；详见 [级联语义审计](smt2020-cascade-semantic-audit.md) |
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop；详见 [返工语义审计](smt2020-rework-semantic-audit.md) |
-| `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint；详见 [语义审计](smt2020-setup-minrun-audit.md) |
+| `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | 真实 Implant setup 与 PartInterval/L/U 不可分离；详见 [语义审计](smt2020-setup-minrun-audit.md) |
 | `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 raw attachment rows；351 台多 calendar PM 生产机 | 303 raw attachment rows；307 台多 calendar PM 生产机 | multiple calendars per physical machine；详见 [逐机静态审计](smt2020-multi-calendar-attachment-audit.md) |
 
 此表按显式 v1 batch 配置验收。默认 `LoaderConfig(mode="audit")` 不加载项目配置，仍返回 `DI_MISSING_BATCH_DECISION_CONFIG` BLOCKER；传入 model/manifest 匹配的 `BatchDecisionConfig` 才产生 `DI_BATCH_DECISION_CONFIG_SUPPLIED` INFO，且完整 `scenario` 仍为 `None`。配置不匹配为 ERROR，不能回退。
