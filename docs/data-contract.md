@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.4`
+版本：`0.1.5`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.4` 已完成静态数据链、真实加工/搬运/release validation slice、sampling 判定诊断 slice，以及 processing、exponential failure、transport、release 和 sampling runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.5` 已完成静态数据链、真实加工/搬运/release/batch 受限 validation slice、sampling 判定诊断 slice，以及 processing、exponential failure、transport、release 和 sampling runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -163,7 +163,7 @@ n_wafers >= B_min
 and (n_wafers >= B_target or feasible_wait >= T_max)
 ```
 
-低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次；raw 中不存在的 `B_target/T_max` 版本化配置仍为 Gate blocker。
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次。raw 不含 `B_target/T_max`，因此**无显式配置时仍是 Gate blocker**；Loader Contract `0.1.5` 接受 manifest 绑定的 `BatchDecisionConfig`。当前 v1 本地 E 级运行参数取每工序 `B_target=raw BATCHMX`、`T_max=60 min`，不是 SMT2020 原始真值或性能推荐。真实 initial-WIP batch slice 只验证决策/加工抽样；它省略设备装卸和 calendar attachment，因此不关闭对应的物理 runtime blocker。
 
 ## 8. Setup
 
@@ -287,6 +287,6 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release validation slice 与受限 sampling 判定诊断 slice 已由 Loader Contract `0.1.4` 实现。真实 sampling profile 已闭合；完整 raw SMT2020 → executable Scenario 仍因 rework、load/unload/cascade、setup MINRUN、batch decision config 和 multi-calendar runtime 缺口未闭环。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release/batch validation slice 与受限 sampling 判定诊断 slice 已由 Loader Contract `0.1.5` 实现。真实 sampling profile 已闭合；batch 决策配置在显式、manifest 匹配的 v1 配置下可形成受限 runtime 证据链。完整 raw SMT2020 → executable Scenario 仍因 rework、load/unload/cascade、setup MINRUN 和 multi-calendar runtime 缺口未闭环；不传 batch 配置时还保留 `DI_MISSING_BATCH_DECISION_CONFIG`。当前判定见 `smt2020-data-integration-gate.md`。
 
-这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的剩余 5 类 blocker 全部清零并重新验收；MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
+这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的所有 blocker 全部清零并重新验收；显式 v1 batch 配置下当前为 4 类，默认无配置为 5 类。MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。

@@ -1,5 +1,7 @@
 # SMT2020 Transport Runtime Audit
 
+> 历史审计快照：以下版本和 blocker 数量仅代表审计当日；当前状态以 [Data Integration Gate](smt2020-data-integration-gate.md) 为准。
+
 审计日期：2026-09-22
 
 代码基线：`2fd1a57c3cd051af62dba8d2bdd44d6da75ef54d`；本轮变更在该基线上验收

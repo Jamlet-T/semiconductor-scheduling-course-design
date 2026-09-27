@@ -1,5 +1,7 @@
 # SMT2020 Release Runtime Audit
 
+> 历史审计快照：以下版本和 blocker 数量仅代表审计当日；当前状态以 [Data Integration Gate](smt2020-data-integration-gate.md) 为准。
+
 审计日期：2026-09-23
 
 Simulation Contract：`0.1.4`；Loader Contract：`0.1.3`；Policy Contract：`0.1.1`；Data Contract：`0.1.3`

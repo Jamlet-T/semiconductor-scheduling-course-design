@@ -34,8 +34,8 @@
 | `uniform(m,w)` | 分布参数 | D/E | `Uniform[m-w/2, m+w/2]`，第二参数为全宽 | 原始文件不自描述；属于参考实现支持的本地规则 |
 | Setup / MINRUN | route 的 `SETUP/WHEN/STIME`、setup/setupgrp 表、tool `SETUPGRP` | A/B/D/E/F | 有向换型；严格 resolver；MINRUN 本地按成功完成的 lot 数计，初始历史缺失按可审计下界处理 | MINRUN 合成场景 runtime 已实现；与参考实现派工时扣减有意不同；真实组合仍为 blocker |
 | 初始 Setup | 无完整历史记录 | F/E | 默认空 setup，并在 provenance 中标识初始化规则 | 无法声称恢复真实历史状态 |
-| Batch 容量 | `BATCHMN`、`BATCHMX` | A/B | 单位为 wafer；合法批次必须满足最小/最大 wafer 容量 | loader 静态映射与随机 per-batch runtime 已验证；决策配置仍为 blocker |
-| Batch 加工与兼容 | `PTPER`、`BATCHCRITF`、`BATCHPER` | A/B | compatibility 与加工口径按字段组合生成 BatchSpec | 真实字段组合已静态验证；raw 不提供 `B_target/T_max` |
+| Batch 容量 | `BATCHMN`、`BATCHMX` | A/B | 单位为 wafer；合法批次必须满足最小/最大 wafer 容量 | loader 静态映射与随机 per-batch runtime 已验证；显式 v1 配置下真实 WIP target/timeout slice 已验证 |
+| Batch 加工与兼容 | `PTPER`、`BATCHCRITF`、`BATCHPER` | A/B/E | compatibility 与加工口径按字段组合生成 BatchSpec；`B_target=raw BATCHMX/T_max=60 min` 是版本化本地选择 | raw 不提供 `B_target/T_max`；无配置仍为 blocker，配置下仅为受限决策闭环，L/U/calendar 另阻塞 |
 | CQT | `STEP`、`STEP_CQT`、`CQT`、`CQTUNITS` | A/B | source `PROCESS_FINISH` 到 target `PROCESS_START`，支持跨步 | runtime 与 loader 静态关系均验证 |
 | Dedication | `SVESTN`、`FORSTEP` | A/B | 建立后约束具体物理 machine，而非 tool group | runtime 与 loader 静态关系均验证 |
 | 初始 Dedication | 无历史 machine | F | 不猜测绑定；记录 unknown/audit 状态 | 无法恢复真实历史绑定 |
@@ -66,7 +66,7 @@
 
 ## 5. Loader 实测更新
 
-Loader Contract `0.1.4` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
+Loader Contract `0.1.5` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
 
 - Product/Route/Operation、STNFAM→具体 machine、Setup transition/group、Batch wafer bounds、CQT、Dedication、Failure/PM calendar/attach、Transport、ReleaseTemplate 和 Initial WIP 已进入 `SMT2020StaticModel`；
 - raw route row 与 parsed operation 逐行 reconciliation，跨文件引用没有 ERROR；
@@ -77,6 +77,7 @@ Loader Contract `0.1.4` 已在真实 HVLM/LVHM 上完成静态映射与受限 ru
 - sampling 基础判定已形成 raw→Scenario→decision/trace/ledger/provenance→audit 诊断链：HVLM/LVHM 显式 221/955、随机 149/662、100% 72/293、initial-WIP 98/75、rework overlap 14/52；
 - 全部显式 sampled 工序（221/955）都使用带 `LOAD=1 min / UNLOAD=1 min` 的 tool template，诊断 slice 未执行这两段时长；因此它不是物理 duration 闭环；
 - raw sampled CQT target 为 HVLM 4、LVHM 18，逐条均为 p100，stochastic endpoint 为 0；p100 不存在 skip 分支，sampling blocker 关闭；未来 p<100 endpoint 仍显式 unsupported；
-- static mapping 不等于完整 runtime closure。rework、load/unload/cascade、setup MINRUN、batch `B_target/T_max` 与 multi-calendar 仍构成 Data Integration 的 5 类 blocker。
+- batch v1 config 显式绑定两模型 manifest，并将 E 级 `raw BATCHMX/60 min` 与 canonical hash 写入 provenance；HVLM target、LVHM timeout 两条真实 initial-WIP slice 通过 per-batch CRN 和结果不变量审计，load/unload/calendar 省略仍有 warning；
+- static mapping 不等于完整 runtime closure。显式 v1 batch 配置下 rework、load/unload/cascade、setup MINRUN 与 multi-calendar 仍构成 Data Integration 的 4 类 blocker；无配置默认 audit 另有 batch 参数 blocker。
 
 完整判定见 `smt2020-data-integration-gate.md`。

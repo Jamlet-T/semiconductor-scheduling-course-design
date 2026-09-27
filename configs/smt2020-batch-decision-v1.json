@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "data_integration_runtime_profile_not_performance_recommendation",
+  "evidence_level": "E_local_modeling_choice_not_raw_SMT2020",
+  "target_rule": "raw_batch_max",
+  "max_wait_minutes": 60.0,
+  "profiles": [
+    {
+      "config_id": "SMT2020_HVLM_BATCH_VALIDATION_V1",
+      "version": "1.0.0",
+      "model_id": "SMT2020_HVLM",
+      "manifest_hash": "997dcd178e13ca1efea758332b67615fbced60725fef5130d4941726220cf1f6"
+    },
+    {
+      "config_id": "SMT2020_LVHM_BATCH_VALIDATION_V1",
+      "version": "1.0.0",
+      "model_id": "SMT2020_LVHM",
+      "manifest_hash": "4c4dffc71acfc4104b623109d396d4c868aa3ee77d254faf93a965a7b29802e4"
+    }
+  ]
+}

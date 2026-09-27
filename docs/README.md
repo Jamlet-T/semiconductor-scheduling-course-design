@@ -23,4 +23,4 @@
 - [SMT2020 Setup MINRUN Audit](smt2020-setup-minrun-audit.md)：Implant_Gas 原始字段链、参考实现差异、初始历史缺失及运行时关闭条件。
 - [SMT2020 Data Integration Gate](smt2020-data-integration-gate.md)：真实数据 reconciliation、validation smoke 与 DI-E01～DI-E15 判定。
 
-M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。processing distribution/PTPER、exponential failure、transport、受限 release 与真实 sampling profile 已形成各自证据链。MINRUN 已有合成场景硬约束运行时，真实组合 blocker 未关闭。Data Integration Gate 仍有 5 类 blocker、状态为 `not_passed_gaps`；没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。当前契约为 Simulation `0.1.6`、Policy `0.1.1`、Loader `0.1.4`、Data `0.1.4`。
+M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。processing distribution/PTPER、exponential failure、transport、受限 release、真实 sampling profile 与显式配置下的真实 batch 决策均已形成各自受限证据链。MINRUN 已有合成场景硬约束运行时，真实组合 blocker 未关闭。显式 v1 batch 配置下 Data Integration Gate 仍有 4 类 blocker、状态为 `not_passed_gaps`；默认无配置 audit 有 5 类。没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。当前契约为 Simulation `0.1.6`、Policy `0.1.1`、Loader `0.1.5`、Data `0.1.5`。

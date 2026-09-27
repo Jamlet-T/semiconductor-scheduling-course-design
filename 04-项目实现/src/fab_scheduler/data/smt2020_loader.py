@@ -5,13 +5,17 @@ from __future__ import annotations
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from math import isfinite
+import hashlib
+import json
+from math import ceil, isfinite
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 from fab_scheduler.data.manifest import DatasetManifest, build_dataset_manifest
 from fab_scheduler.domain.models import (
+    BatchSpec,
     DatasetProvenanceSpec,
     LotSpec,
     MachineSpec,
@@ -23,9 +27,122 @@ from fab_scheduler.domain.models import (
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.4"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.4"
+SMT2020_LOADER_VERSION = "0.1.5"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.5"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchDecisionConfig:
+    """版本化的 batch 决策参数；raw SMT2020 不含这些值，不能隐式补齐。"""
+
+    config_id: str
+    version: str
+    model_id: str
+    manifest_hash: str
+    target_rule: Literal["raw_batch_max"]
+    max_wait_minutes: float
+    source_path: Path | None = None
+    source_sha256: str | None = None
+    source_schema_version: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("config_id", "version", "model_id", "manifest_hash"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"batch decision {field_name} 必须为非空字符串")
+        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version) is None:
+            raise ValueError("batch decision version 必须为 x.y.z")
+        if self.target_rule != "raw_batch_max":
+            raise ValueError(
+                "batch decision target_rule 仅支持 raw_batch_max；禁止隐式选择 target"
+            )
+        if (
+            len(self.manifest_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.manifest_hash.lower())
+        ):
+            raise ValueError("batch decision manifest_hash 必须为 64 位十六进制 SHA-256")
+        if (
+            isinstance(self.max_wait_minutes, bool)
+            or not isinstance(self.max_wait_minutes, (int, float))
+            or not isfinite(float(self.max_wait_minutes))
+            or self.max_wait_minutes < 0
+        ):
+            raise ValueError("batch decision max_wait_minutes 必须为有限非负数")
+        if self.source_path is not None and not isinstance(self.source_path, Path):
+            raise TypeError("batch decision source_path 必须是 Path")
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "config_id": self.config_id,
+            "version": self.version,
+            "model_id": self.model_id,
+            "manifest_hash": self.manifest_hash,
+            "target_rule": self.target_rule,
+            "max_wait_minutes": float(self.max_wait_minutes),
+        }
+
+    @property
+    def canonical_hash(self) -> str:
+        payload = json.dumps(
+            self.canonical_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def provenance_items(self) -> tuple[tuple[str, str], ...]:
+        items = (
+            ("batch_decision_config_id", self.config_id),
+            ("batch_decision_config_version", self.version),
+            ("batch_decision_config_model_id", self.model_id),
+            ("batch_decision_config_manifest_hash", self.manifest_hash),
+            ("batch_decision_config_target_rule", self.target_rule),
+            ("batch_decision_config_max_wait_minutes", str(float(self.max_wait_minutes))),
+            ("batch_decision_config_hash", self.canonical_hash),
+            ("batch_decision_config_source_sha256", self.source_sha256 or ""),
+            ("batch_decision_config_source_schema_version", self.source_schema_version or ""),
+        )
+        return items
+
+
+def load_batch_decision_config(path: Path, model_id: str) -> BatchDecisionConfig:
+    """从显式版本化 artifact 读取一套模型参数；不在 loader 内自动选择。"""
+
+    raw_bytes = path.read_bytes()
+    payload = json.loads(raw_bytes.decode("utf-8"))
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version", "purpose", "evidence_level", "target_rule",
+        "max_wait_minutes", "profiles",
+    }:
+        raise ValueError("batch decision artifact 顶层 schema 不匹配")
+    if payload["schema_version"] != "1.0.0" or payload["purpose"] != "data_integration_runtime_profile_not_performance_recommendation":
+        raise ValueError("batch decision artifact schema/purpose 不匹配")
+    if payload["evidence_level"] != "E_local_modeling_choice_not_raw_SMT2020":
+        raise ValueError("batch decision artifact 必须明确标注 E 级本地假设")
+    profiles = payload["profiles"]
+    if not isinstance(profiles, list) or not profiles or any(
+        not isinstance(profile, dict)
+        or set(profile) != {"config_id", "version", "model_id", "manifest_hash"}
+        for profile in profiles
+    ):
+        raise ValueError("batch decision artifact profiles schema 不匹配")
+    matches = [profile for profile in profiles if profile["model_id"] == model_id]
+    if len(matches) != 1:
+        raise ValueError("batch decision artifact 必须恰有一个对应 model profile")
+    profile = matches[0]
+    return BatchDecisionConfig(
+        config_id=profile["config_id"],
+        version=profile["version"],
+        model_id=profile["model_id"],
+        manifest_hash=profile["manifest_hash"],
+        target_rule=payload["target_rule"],
+        max_wait_minutes=payload["max_wait_minutes"],
+        source_path=path.resolve(),
+        source_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        source_schema_version=payload["schema_version"],
+    )
 
 
 class LoaderError(RuntimeError):
@@ -234,22 +351,27 @@ class LoaderConfig:
     mode: Literal[
         "audit", "validation_slice", "transport_validation_slice",
         "release_validation_slice", "sampling_validation_slice",
+        "batch_validation_slice",
     ] = "audit"
     validation_product_id: str | None = None
     validation_transport_pair: tuple[str, str] | None = None
     validation_release_lot_prefix: str | None = None
     validation_sampling_operation: tuple[str, int] | None = None
+    validation_batch_operation: tuple[str, int] | None = None
+    batch_decision_config: BatchDecisionConfig | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in {
             "audit", "validation_slice", "transport_validation_slice",
             "release_validation_slice", "sampling_validation_slice",
+            "batch_validation_slice",
         }:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
         if self.mode == "audit" and (
             self.validation_product_id is not None
             or self.validation_transport_pair is not None
             or self.validation_release_lot_prefix is not None
+            or self.validation_batch_operation is not None
             or self.validation_sampling_operation is not None
         ):
             raise ValueError("audit mode 不接受 validation selector")
@@ -285,9 +407,29 @@ class LoaderConfig:
                 raise ValueError(
                     "validation_sampling_operation 的 step 必须为正整数"
                 )
+        if self.validation_batch_operation is not None:
+            if self.mode != "batch_validation_slice":
+                raise ValueError(
+                    "validation_batch_operation 仅适用于 batch_validation_slice"
+                )
+            route_id, step_id = self.validation_batch_operation
+            if not route_id:
+                raise ValueError("validation_batch_operation 的 route 不能为空")
+            if isinstance(step_id, bool) or not isinstance(step_id, int) or step_id < 1:
+                raise ValueError("validation_batch_operation 的 step 必须为正整数")
+        if self.batch_decision_config is not None and not isinstance(
+            self.batch_decision_config, BatchDecisionConfig
+        ):
+            raise TypeError("batch_decision_config 必须是 BatchDecisionConfig")
+        if self.batch_decision_config is not None and self.mode not in {
+            "audit", "batch_validation_slice"
+        }:
+            raise ValueError(
+                "batch_decision_config 仅适用于 audit 或 batch_validation_slice"
+            )
 
     def provenance_items(self) -> tuple[tuple[str, str], ...]:
-        return (
+        items = (
             ("mode", self.mode),
             ("validation_product_id", self.validation_product_id or ""),
             (
@@ -304,7 +446,17 @@ class LoaderConfig:
                     if self.validation_sampling_operation is not None else ""
                 ),
             ),
+            (
+                "validation_batch_operation",
+                (
+                    f"{self.validation_batch_operation[0]}:{self.validation_batch_operation[1]}"
+                    if self.validation_batch_operation is not None else ""
+                ),
+            ),
         )
+        if self.batch_decision_config is None:
+            return items + (("batch_decision_config_hash", ""),)
+        return items + self.batch_decision_config.provenance_items()
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,11 +480,17 @@ class LoadedScenario:
     def audit_to_dict(self) -> dict[str, Any]:
         """返回可直接写入 JSON 的机器可审计摘要。"""
 
+        config_dict = asdict(self.loader_config)
+        if config_dict["batch_decision_config"] is not None:
+            source_path = config_dict["batch_decision_config"]["source_path"]
+            config_dict["batch_decision_config"]["source_path"] = (
+                str(source_path) if source_path is not None else None
+            )
         return {
             "loader_contract_version": SMT2020_LOADER_CONTRACT_VERSION,
             "loader_version": SMT2020_LOADER_VERSION,
             "dataset_manifest": asdict(self.dataset_manifest),
-            "loader_config": asdict(self.loader_config),
+            "loader_config": config_dict,
             "statistics": dict(self.statistics),
             "audit": [asdict(item) for item in self.loader_audit],
             "semantic_evidence": [asdict(item) for item in self.semantic_evidence],
@@ -1059,7 +1217,124 @@ def load_smt2020(
             )
     if setup_minrun_count:
         note("BLOCKER", "DI_UNSUPPORTED_SETUP_MINRUN", "setupgrp.MINRUN 已有本地合成 runtime，但真实组合映射未闭环", affected=setup_minrun_count)
-    note("BLOCKER", "DI_MISSING_BATCH_DECISION_CONFIG", "B_target/T_max 不在 raw 数据中；正式场景需版本化 loader_config", batch_operations=len(batch_ops))
+    batch_decision_config = config.batch_decision_config
+    batch_config_matches = batch_decision_config is not None
+    if batch_decision_config is None:
+        note(
+            "BLOCKER",
+            "DI_MISSING_BATCH_DECISION_CONFIG",
+            "B_target/T_max 不在 raw 数据中；正式场景需显式传入版本化 BatchDecisionConfig",
+            batch_operations=len(batch_ops),
+        )
+    else:
+        if batch_decision_config.source_path is None:
+            batch_config_matches = False
+            note(
+                "BLOCKER",
+                "DI_MISSING_BATCH_DECISION_CONFIG",
+                "BatchDecisionConfig 缺少可复核的版本化 source artifact；手工构造对象不能关闭 Gate blocker",
+                config_id=batch_decision_config.config_id,
+            )
+        else:
+            try:
+                source_config = load_batch_decision_config(
+                    batch_decision_config.source_path,
+                    batch_decision_config.model_id,
+                )
+            except (OSError, ValueError, TypeError, KeyError, UnicodeError) as exc:
+                batch_config_matches = False
+                note(
+                    "ERROR",
+                    "DI_BATCH_DECISION_CONFIG_SOURCE_INVALID",
+                    "BatchDecisionConfig source artifact 无法重新解析；禁止回退",
+                    detail=str(exc),
+                )
+            else:
+                if (
+                    source_config.canonical_payload() != batch_decision_config.canonical_payload()
+                    or source_config.source_sha256 != batch_decision_config.source_sha256
+                    or source_config.source_schema_version != batch_decision_config.source_schema_version
+                ):
+                    batch_config_matches = False
+                    note(
+                        "ERROR",
+                        "DI_BATCH_DECISION_CONFIG_SOURCE_MISMATCH",
+                        "BatchDecisionConfig 与 source artifact 不一致；禁止回退",
+                        config_id=batch_decision_config.config_id,
+                    )
+        if batch_decision_config.model_id != model_id:
+            batch_config_matches = False
+            note(
+                "ERROR",
+                "DI_BATCH_DECISION_CONFIG_MODEL_MISMATCH",
+                "BatchDecisionConfig.model_id 与当前 SMT2020 模型不一致；禁止回退",
+                config_model_id=batch_decision_config.model_id,
+                model_id=model_id,
+            )
+        if batch_decision_config.manifest_hash != manifest.manifest_hash:
+            batch_config_matches = False
+            note(
+                "ERROR",
+                "DI_BATCH_DECISION_CONFIG_MANIFEST_MISMATCH",
+                "BatchDecisionConfig.manifest_hash 与真实数据 manifest 不一致；禁止回退",
+                config_manifest_hash=batch_decision_config.manifest_hash,
+                manifest_hash=manifest.manifest_hash,
+            )
+        if batch_config_matches:
+            invalid_batch_bounds = tuple(
+                op for op in batch_ops
+                if op.batch_max_wafers is None
+                or op.batch_min_wafers is None
+                or op.batch_min_wafers <= 0
+                or op.batch_max_wafers < op.batch_min_wafers
+            )
+            if invalid_batch_bounds:
+                batch_config_matches = False
+                note(
+                    "ERROR",
+                    "DI_BATCH_DECISION_CONFIG_RAW_BOUNDS_INVALID",
+                    "raw batch 容量不满足显式 raw_batch_max 配置规则；禁止回退",
+                    affected=len(invalid_batch_bounds),
+                )
+        if batch_config_matches:
+            batch_template_by_machine = {
+                machine_id: template
+                for template in machine_templates
+                for machine_id in template.resource_instance_ids
+            }
+            unsupported_batch_compatibility = tuple(
+                op for op in batch_ops
+                if not op.eligible_machine_ids or any(
+                    machine_id not in batch_template_by_machine
+                    or batch_template_by_machine[machine_id].batch_criterion != "crit_sameroutestep"
+                    or batch_template_by_machine[machine_id].batch_unit != "piece"
+                    for machine_id in op.eligible_machine_ids
+                )
+            )
+            if unsupported_batch_compatibility:
+                batch_config_matches = False
+                note(
+                    "ERROR",
+                    "DI_BATCH_COMPATIBILITY_UNSUPPORTED",
+                    "raw BATCHCRITF/BATCHPER 与当前 BatchSpec 不兼容；禁止依赖默认规则",
+                    affected=len(unsupported_batch_compatibility),
+                )
+        if batch_config_matches:
+            note(
+                "INFO",
+                "DI_BATCH_DECISION_CONFIG_SUPPLIED",
+                "已提供并校验版本化 BatchDecisionConfig；raw_batch_max 与 T_max 仅为本地 E 级验证假设",
+                config_id=batch_decision_config.config_id,
+                config_hash=batch_decision_config.canonical_hash,
+                batch_operations=len(batch_ops),
+            )
+    if config.mode == "batch_validation_slice" and batch_config_matches:
+        note(
+            "WARNING",
+            "DI_BATCH_SLICE_OMITS_LOAD_UNLOAD",
+            "batch validation slice 仅验证组批判定/真实 processing distribution；原设备 LOAD/UNLOAD 尚未进入物理时长",
+            raw_batch_operations=len(batch_ops),
+        )
     if any(item.interval and item.interval.kind == "exponential" for item in down_calendars):
         note("INFO", "DI_EXPONENTIAL_FAILURE_RUNTIME_SUPPORTED", "downcal exponential 已按均值参数进入共享 sampler", calendars=len(down_calendars))
     note(
@@ -1219,8 +1494,32 @@ def load_smt2020(
         scenario = _build_release_validation_slice(static_model, manifest, config)
     elif config.mode == "sampling_validation_slice":
         scenario = _build_sampling_validation_slice(static_model, manifest, config)
+    elif config.mode == "batch_validation_slice" and batch_config_matches:
+        scenario = _build_batch_validation_slice(static_model, manifest, config)
     else:
         scenario = None
+    if config.mode == "batch_validation_slice" and scenario is not None:
+        selected_machine_id = scenario.machines[0].machine_id
+        eligible_machine_count = int(dict(scenario.dataset_provenance.loader_config)["batch_slice_raw_eligible_machine_count"])
+        if eligible_machine_count > 1:
+            note(
+                "WARNING",
+                "DI_BATCH_SLICE_SINGLE_MACHINE",
+                "batch validation slice 只选取一台真实合格机；其余资格机器及资源竞争不进入诊断",
+                selected_machine_id=selected_machine_id,
+                raw_eligible_machines=eligible_machine_count,
+            )
+        omitted_calendars = stats["attachment_machine_counts_by_physical_machine"].get(
+            selected_machine_id, {}
+        )
+        if any(omitted_calendars.values()):
+            note(
+                "WARNING",
+                "DI_BATCH_SLICE_OMITS_CALENDAR_ATTACHMENTS",
+                "batch validation slice 不装配该真实物理机的 Failure/PM calendar；仅验证 batch 决策与加工抽样",
+                machine_id=selected_machine_id,
+                **omitted_calendars,
+            )
     evidence = (
         SemanticEvidence("entity-fields", "A", "raw SMT2020 tables", "字段和值直接读取"),
         SemanticEvidence("qualification", "B", "route.STNFAM + tool.STNFAM/STNQTY", "推导具体物理机资格集合"),
@@ -1243,9 +1542,215 @@ def load_smt2020(
             "route.StepPercent + initial WIP + SMT2020 paper + fixed PySCFabSim reference + local contract",
             "受限 per-lot operation-entry 判定可复现；真实 CQT target 均为 p=100，LOAD/UNLOAD 组合继续阻塞完整物理兼容",
         ),
+        SemanticEvidence(
+            "batch-decision-runtime",
+            "A/B/E",
+            "raw BATCHMN/BATCHMX + real initial WIP + explicit versioned BatchDecisionConfig",
+            "B_target=raw BATCHMX 与 T_max 为显式本地假设；受限 slice 不包含 LOAD/UNLOAD 和 calendar",
+        ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
     return LoadedScenario(scenario, static_model, manifest, tuple(audit), evidence, MappingProxyType(stats), config)
+
+
+def _build_batch_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """从真实 initial WIP 构造一个受限 per-batch 验证 slice。
+
+    该 slice 只保留 raw 中已经具备 ``BATCHMN/BATCHMX`` 的 per-batch 工序，
+    且要求真实 WIP 在同一 route/step 上达到 BATCHMN。每个 lot 保留原始
+    25-wafer WIP 与元数据；batch target 来自显式配置的 ``raw_batch_max``。
+    机器 LOAD/UNLOAD 不进入 ``MachineSpec`` 的物理时长，相关 raw 数值写入
+    provenance，并由主 loader 以 WARNING 标记，不能据此宣称 physical-duration closure。
+    """
+
+    decision_config = config.batch_decision_config
+    if decision_config is None:
+        raise ValueError("batch_validation_slice 必须显式提供 BatchDecisionConfig")
+
+    product_by_id = {item.product_id: item for item in model.products}
+    all_operations = tuple(
+        operation for route in model.routes for operation in route.operations
+    )
+    cqt_endpoint_keys = {
+        (operation.route_id, step_id)
+        for operation in all_operations
+        if operation.cqt_target_step_id is not None
+        for step_id in (operation.step_id, operation.cqt_target_step_id)
+    }
+    dedication_endpoint_keys = {
+        (operation.route_id, step_id)
+        for operation in all_operations
+        if operation.dedication_target_step_id is not None
+        for step_id in (operation.step_id, operation.dedication_target_step_id)
+    }
+    operations_by_key = {
+        (route.route_id, operation.step_id): operation
+        for route in model.routes
+        for operation in route.operations
+        if (
+            operation.processing_basis == "per_batch"
+            and operation.batch_min_wafers is not None
+            and operation.batch_max_wafers is not None
+            and operation.required_setup is None
+            and operation.setup_override_minutes is None
+            and operation.batch_interval_minutes is None
+            and operation.part_interval_minutes is None
+            and operation.sample_percent is None
+            and operation.rework_step_id is None
+            and operation.cqt_target_step_id is None
+            and operation.dedication_target_step_id is None
+            and (route.route_id, operation.step_id) not in cqt_endpoint_keys
+            and (route.route_id, operation.step_id) not in dedication_endpoint_keys
+            and operation.eligible_machine_ids
+        )
+    }
+    wip_by_key: dict[tuple[str, int], list[InitialWipDefinition]] = {}
+    for wip in model.initial_wip:
+        product = product_by_id.get(wip.product_id)
+        if product is None or wip.quantity_wafers != 25:
+            continue
+        wip_by_key.setdefault((product.route_id, wip.current_step_id), []).append(wip)
+
+    candidates: list[tuple[tuple[str, int], OperationDefinition, tuple[InitialWipDefinition, ...]]] = []
+    for key, operation in operations_by_key.items():
+        wips = tuple(sorted(wip_by_key.get(key, ()), key=lambda item: (item.source_row or 0, item.lot_id)))
+        if wips and sum(item.quantity_wafers for item in wips) >= operation.batch_min_wafers:
+            candidates.append((key, operation, wips))
+    requested = config.validation_batch_operation
+    if requested is not None:
+        candidates = [item for item in candidates if item[0] == requested]
+        if not candidates:
+            raise ValueError(
+                "找不到满足 batch validation slice 的精确真实 selector："
+                f"{requested[0]}:{requested[1]}"
+            )
+    if not candidates:
+        raise ValueError(
+            "找不到具备真实 initial WIP 且达到 BATCHMN 的受限 per-batch 工序"
+        )
+
+    # 优先选择真实 WIP 达到 BATCHMN 但未达到 target 的组，能够验证 T_max；
+    # 若数据没有此形态，则按 route/step 稳定选择首个可行组。
+    has_timeout_candidate = any(
+        sum(wip.quantity_wafers for wip in item[2])
+        < (item[1].batch_max_wafers or 0)
+        for item in candidates
+    )
+    if has_timeout_candidate:
+        selection_key = lambda item: (
+            sum(wip.quantity_wafers for wip in item[2])
+            >= (item[1].batch_max_wafers or 0),
+            item[1].batch_min_wafers or 0,
+            item[0][0],
+            item[0][1],
+        )
+    else:
+        selection_key = lambda item: (item[0][0], item[0][1])
+    key, operation, wips = sorted(candidates, key=selection_key)[0]
+    # The target is deliberately the raw BATCHMX under the only supported rule.
+    target_wafers = operation.batch_max_wafers
+    assert target_wafers is not None
+    if decision_config.target_rule != "raw_batch_max":
+        raise ValueError("不支持的 batch target_rule；禁止隐式回退")
+    if target_wafers < operation.batch_min_wafers:
+        raise ValueError("raw BATCHMX 小于 BATCHMN，无法构造 BatchSpec")
+
+    product_ids = tuple(sorted({wip.product_id for wip in wips}))
+    machine_id = operation.eligible_machine_ids[0]
+    tool_template = next(
+        template
+        for template in model.machine_templates
+        if machine_id in template.resource_instance_ids
+    )
+    if tool_template.batch_criterion != "crit_sameroutestep" or tool_template.batch_unit != "piece":
+        raise ValueError("真实 batch tool 的 BATCHCRITF/BATCHPER 当前不受支持")
+    omitted_calendar_ids = tuple(sorted(
+        attachment.calendar_id
+        for attachment in model.calendar_attachments
+        if (
+            attachment.resource_type == "stnfam"
+            and attachment.resource_name == tool_template.tool_family_id
+        ) or (
+            attachment.resource_type == "stngrp"
+            and attachment.resource_name == tool_template.group_id
+        )
+    ))
+    processing = to_runtime_distribution(operation.processing)
+    batch_spec = BatchSpec(
+        minimum_wafers=operation.batch_min_wafers,
+        maximum_wafers=operation.batch_max_wafers,
+        target_wafers=target_wafers,
+        max_wait_minutes=decision_config.max_wait_minutes,
+        compatibility_rule=tool_template.batch_criterion,
+    )
+    runtime_operation = OperationSpec(
+        operation.step_id,
+        processing.mean_minutes,
+        (machine_id,),
+        route_id=operation.route_id,
+        tool_group_id=operation.tool_family_id,
+        batch_spec=batch_spec,
+        processing_distribution=processing,
+        processing_basis=operation.processing_basis,
+    )
+    lots = tuple(
+        LotSpec(
+            wip.lot_id,
+            0.0,
+            (runtime_operation,),
+            quantity_wafers=25,
+            due_time=wip.due_minutes,
+            priority=wip.priority,
+            is_initial_wip=True,
+            product_id=wip.product_id,
+            order_id=wip.order_id,
+            hot_lot=wip.hot_lot,
+            source_row=wip.source_row,
+        )
+        for wip in wips
+    )
+    batch_count = ceil(sum(lot.quantity_wafers for lot in lots) / target_wafers)
+    processing_upper = processing.mean_minutes + processing.width_minutes / 2
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        config.provenance_items() + (
+            ("batch_slice_operation", f"{operation.route_id}:{operation.step_id}"),
+            ("batch_slice_product_ids", ",".join(product_ids)),
+            ("batch_slice_wip_lots", str(len(lots))),
+            ("batch_slice_selected_machine_id", machine_id),
+            ("batch_slice_raw_eligible_machine_count", str(len(operation.eligible_machine_ids))),
+            ("batch_slice_raw_batch_criterion", tool_template.batch_criterion),
+            ("batch_slice_raw_batch_unit", tool_template.batch_unit),
+            ("batch_slice_omitted_load_minutes", str(tool_template.load_minutes)),
+            ("batch_slice_omitted_unload_minutes", str(tool_template.unload_minutes)),
+            ("batch_slice_omitted_calendar_ids", ",".join(omitted_calendar_ids)),
+        ),
+        tuple(
+            SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256)
+            for item in manifest.files
+        ),
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:batch-validation-slice:"
+            f"{operation.route_id}:{operation.step_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=(MachineSpec(machine_id, location_id=tool_template.location_id),),
+        lots=lots,
+        termination_mode="fixed_horizon",
+        horizon=batch_count * processing_upper + decision_config.max_wait_minutes + 1,
+        dataset_provenance=provenance,
+    )
 
 
 def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest, config: LoaderConfig) -> Scenario:

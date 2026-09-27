@@ -75,7 +75,12 @@ class ContractConfigurationTests(unittest.TestCase):
             SMT2020_LOADER_CONTRACT_VERSION,
         )
         self.assertEqual(gate["loader_version"], SMT2020_LOADER_VERSION)
-        self.assertEqual(gate["blocker_count_per_model"], 5)
+        self.assertEqual(gate["blocker_count_per_model"], 4)
+        self.assertEqual(gate["blocker_count_profile"], "explicit_batch_decision_v1")
+        self.assertEqual(
+            gate["batch_decision_config"],
+            "configs/smt2020-batch-decision-v1.json",
+        )
         self.assertEqual(gate["status"], "not_passed_gaps")
         self.assertFalse(gate["formal_experiments_allowed"])
         self.assertFalse(gate["optimizer_training_allowed"])

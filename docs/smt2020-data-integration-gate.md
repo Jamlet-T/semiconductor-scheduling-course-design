@@ -1,27 +1,27 @@
 # SMT2020 Data Integration Gate
 
 审计日期：2026-09-27
-本轮起点：Sampling 闭环提交 `97907711854de1b477bd89a9389a73c96cb7291b`；本轮最终 Git commit 以验收记录为准
+本轮起点：级联语义审计提交 `24f64ae5c91a682da0c6e73126ffb64a8a79e748`；本轮最终 Git commit 以验收记录为准
 Simulation Contract：`0.1.6`
 Policy Contract：`0.1.1`
-Loader Contract：`0.1.4`
+Loader Contract：`0.1.5`
 
 ## 1. Executive conclusion
 
 **SMT2020 Data Integration Gate = `not_passed_gaps`。**
 
-当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运/release 的受限 validation slice 和 sampling 判定诊断 slice。两套 raw 数据跨文件引用均无 ERROR。`StepPercent` 已进入 immutable Scenario 和 operation-entry runtime，并具备独立 skip trace、稳定随机身份、provenance 与审计检查器。raw 中 4/18 个 sampled CQT target 全部 p=100，stochastic endpoint 为 0，因此实际 sampling profile 已闭环；诊断 slice 仍不证明完整物理 duration。本轮进一步核对了 MINRUN 的真实三表引用并实现合成场景硬约束，同时将 calendar attachment 展开为逐物理机审计；两项均未因此越过各自的真实数据 runtime blocker。
+当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运/release/batch 的受限 validation slice 和 sampling 判定诊断 slice。两套 raw 数据跨文件引用均无 ERROR。`StepPercent` 已进入 immutable Scenario 和 operation-entry runtime。batch 新增显式、manifest 绑定的 v1 决策配置，并在两模型真实 initial WIP 上验证 target/timeout 两条启动路径；这些诊断 slice 均不证明完整物理 duration。MINRUN 的真实组合和同机多 calendar 仍各自保持 blocker。
 
-Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、rework、setup MINRUN、多 calendar attachment；同时 raw 不提供 `B_target/T_max`，正式场景需要显式版本化配置。全部显式 sampled 工序（221/955）所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`，sampling slice 没有执行这两段时长，因此 sampling blocker 已关闭但 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保留。完整加载仍有意返回 `scenario=None`；当前共 5 类 blocker。
+Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、rework、setup MINRUN、多 calendar attachment。raw 不提供 `B_target/T_max`；仓库现在提供显式 [v1 决策配置](../configs/smt2020-batch-decision-v1.json)，以 E 级本地规则取 `B_target=raw BATCHMX`、`T_max=60 min`，不是 raw 真值或性能推荐。**在显式传入该配置的 Gate profile 下，剩余 4 类 blocker**；无配置的默认 audit 仍有 5 类，绝不隐式采用 v1。batch/sampling 诊断 slice 均省略真实设备的 load/unload，batch slice 还省略已附着的 calendar；完整加载仍有意返回 `scenario=None`。
 
 ## 2. 实际模型和 manifest
 
 | Model | Files | Manifest hash | Dataset version |
 | --- | ---: | --- | --- |
-| SMT2020_HVLM | 12 | `8b5ad109d1052dff53c4354f4567a71b84c27b2badf159105194e46cde4a8cd7` | `SMT2020_HVLM@sha256:8b5ad109d1052dff53c4354f4567a71b84c27b2badf159105194e46cde4a8cd7` |
-| SMT2020_LVHM | 20 | `80c8ccc08aa8f3ed5338cbb27af4db20c82deeca24c5fa060b57268ca3ae247c` | `SMT2020_LVHM@sha256:80c8ccc08aa8f3ed5338cbb27af4db20c82deeca24c5fa060b57268ca3ae247c` |
+| SMT2020_HVLM | 12 | `997dcd178e13ca1efea758332b67615fbced60725fef5130d4941726220cf1f6` | `SMT2020_HVLM@sha256:997dcd178e13ca1efea758332b67615fbced60725fef5130d4941726220cf1f6` |
+| SMT2020_LVHM | 20 | `4c4dffc71acfc4104b623109d396d4c868aa3ee77d254faf93a965a7b29802e4` | `SMT2020_LVHM@sha256:4c4dffc71acfc4104b623109d396d4c868aa3ee77d254faf93a965a7b29802e4` |
 
-绝对路径与加载时间不参与 hash。测试已验证不同目录、不同文件创建/枚举顺序产生相同 logical hash，内容改变则 hash 改变。
+绝对路径与加载时间不参与 hash。测试已验证不同目录、不同文件创建/枚举顺序产生相同 logical hash，内容改变则 hash 改变。此处 hash 相比 Loader `0.1.4` 发生变化，是因为 manifest canonical payload 按既有契约包含 loader version；raw 文件字节没有改变。
 
 ## 3. Reconciliation statistics
 
@@ -65,7 +65,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Qualification | STNFAM→STNQTY→稳定 machine ID | Engine 已使用具体 machine | PASS |
 | Processing | uniform/PTPER/interval 全部保存 | uniform、per_lot/per_piece/per_batch runtime 已支持；interval/cascade 未实现 | PASS-partial / Cascade BLOCKER |
 | Setup | route override、transition、group/MINRUN 已保存 | transition 已支持；MINRUN 已有合成场景硬约束与 provenance，真实组合映射未闭环 | BLOCKER |
-| Batch | wafer min/max 与 criterion 已保存 | 随机 per-batch runtime 已支持；B_target/T_max 正式配置缺失 | BLOCKER |
+| Batch | wafer min/max 与 criterion 已保存 | 显式 v1 配置 + 真实 initial-WIP target/timeout batch slice + 单次 per-batch 抽样已验证；slice 省略 L/U/calendar | PASS-limited；完整物理由其他 blocker 阻塞 |
 | CQT | source/target/unit 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
 | Dedication | source/target/physical qualification 已闭合 | runtime 已验证 | PASS-static/runtime；initial history warning |
 | Failure | calendar/attach/FOA 已解析 | exponential runtime 已支持；多 calendar/机不支持 | BLOCKER |
@@ -94,8 +94,9 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing；详见 [级联语义审计](smt2020-cascade-semantic-audit.md) |
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop；详见 [返工语义审计](smt2020-rework-semantic-audit.md) |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint；详见 [语义审计](smt2020-setup-minrun-audit.md) |
-| `DI_MISSING_BATCH_DECISION_CONFIG` | 28 | 135 | explicit versioned B_target/T_max config |
 | `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 raw attachment rows；351 台多 calendar PM 生产机 | 303 raw attachment rows；307 台多 calendar PM 生产机 | multiple calendars per physical machine；详见 [逐机静态审计](smt2020-multi-calendar-attachment-audit.md) |
+
+此表按显式 v1 batch 配置验收。默认 `LoaderConfig(mode="audit")` 不加载项目配置，仍返回 `DI_MISSING_BATCH_DECISION_CONFIG` BLOCKER；传入 model/manifest 匹配的 `BatchDecisionConfig` 才产生 `DI_BATCH_DECISION_CONFIG_SUPPLIED` INFO，且完整 `scenario` 仍为 `None`。配置不匹配为 ERROR，不能回退。
 
 ## 7. Validation smoke
 
@@ -164,7 +165,18 @@ scope: sampling decision/mapping diagnostic only, not physical-duration closure
 warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload minutes
 ```
 
-这些运行证明受限记录上的 parser→static model→Scenario schema→`simulate()`→manifest provenance 链条。sampling slice 只诊断 sampling decision/mapping；它排除 rework 并省略真实 tool load/unload duration，因此不是物理闭包，不比较策略、不生成正式 KPI 结论，也不证明 full HVLM/LVHM 可执行。p100 sampled CQT target 的无跳步集成由独立 micro/integration tests 验证。
+Batch smoke（FIFO、seed 42；显式 v1 配置、真实 initial WIP）：
+
+```text
+HVLM r_3:1: raw BATCHMN/BATCHMX=125/150 wafers；15 个真实 WIP；首批 150 wafers 于 t=0 TARGET_REACHED
+LVHM r_1:331: raw BATCHMN/BATCHMX=75/100 wafers；3 个真实 25-wafer WIP；t=60 TIMEOUT_REACHED，启动 75-wafer batch
+config: B_target=raw BATCHMX，T_max=60 min，model/manifest/source artifact 绑定；canonical config 与 source 文件 SHA-256 进入 provenance
+runtime: 每个物理 batch 仅一次 processing sample；FIFO/SPT 对相同 batch identity 的 CRN 一致
+audit: batch capacity、trace、provenance 与 machine/lot 守恒检查通过
+omissions: 只选一台合格机；每机 LOAD/UNLOAD 各 1 min、已附着的 Failure/PM calendar 未进入 slice；独立 WARNING 和 provenance 保留
+```
+
+这些运行证明受限记录上的 parser→static model→Scenario schema→`simulate()`→manifest provenance 链条。sampling slice 只诊断 sampling decision/mapping，batch slice 只诊断组批判定/加工抽样；它们省略真实 tool load/unload duration，batch 还只选一台合格机并省略 calendar，因此不是完整物理闭包，不比较策略、不生成正式 KPI 结论，也不证明 full HVLM/LVHM 可执行。p100 sampled CQT target 的无跳步集成由独立 micro/integration tests 验证。
 
 ## 8. PySCFabSim 可比项与差异
 
@@ -180,10 +192,10 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 - validation slice 使用真实 uniform sampler：仅 smoke compatibility，不能进入正式结果；
 - transport 被建模为外生无资源延迟：E；runtime 已执行，未建模 OHT/AMHS 容量；
 - `fromto` 未配置 pair 按零时长执行并显式计数：已冻结本地规则；真实 route 中此类转移 HVLM 67、LVHM 289 次，不能解释为已知真实物流耗时；
-- `B_target/T_max`：raw 不提供，未来必须由版本化 experiment/loader config 给出；
+- `B_target/T_max`：raw 不提供；v1 显式配置使用 E 级 `raw BATCHMX/60 min`，只用于当前 Data Integration 运行参数闭环，不是性能推荐；正式基线实验需先审查参数敏感性；
 - sampling：None/100%/随机百分比、operation-entry skip、initial WIP、CRN 与 provenance 已验证；raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0；真实 sampling blocker 已关闭；
 - p<100 CQT/Dedication endpoint：当前 raw 未出现，Scenario 显式拒绝；若未来出现必须重新进入 blocker，而非 silent fallback；
-- load-unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment：仍列为 5 类 BLOCKER。
+- 在显式 v1 batch 配置下，load-unload/cascade、rework、setup MINRUN、multi-calendar attachment 仍列为 4 类 BLOCKER；默认无配置 audit 则另有 batch decision config，共 5 类。
 - 初始 WIP 返工历史：loader 以 `DI_REWORK_INITIAL_HISTORY_UNKNOWN` 记录 return/middle/source 位置计数；不伪造 visit、既往判定或原机台绑定。
 - release template：`DI_UNSUPPORTED_RELEASE_TEMPLATES` 已关闭，但仅对 `fixed_horizon + constant RDIST + LOTSPERRPT=1` 声明支持；非 constant、`LOTSPERRPT>1`、非 fixed-horizon 或其他未验证组合仍显式 unsupported。
 
@@ -197,7 +209,7 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 | DI-E02 | Product/Route/Operation/Tool/Lot mapping | static model + reconciliation | PASS-static | future lot 仍为 template |
 | DI-E03 | Qualification/Processing mapping | distribution sampler、PTPER resolver、真实 validation slice | PASS-partial | load/unload/cascade 由 DI-E10 阻塞 |
 | DI-E04 | Setup mapping | transition/group/MINRUN parsed | GAP | MINRUN runtime |
-| DI-E05 | Batch mapping | wafer bounds/criterion + per-batch single physical sample | GAP | B_target/T_max decision config |
+| DI-E05 | Batch mapping | wafer bounds/criterion + 显式 v1 配置 + 真实 WIP target/timeout slice + per-batch 单次 physical sample | PASS-limited | 完整 L/U/calendar 组合由 DI-E10/DI-E08/09 阻塞 |
 | DI-E06 | CQT mapping | 330 constraints、跨步统计、refs closed | PASS | initial history warning |
 | DI-E07 | Dedication mapping | 91 constraints、refs closed | PASS | initial history warning |
 | DI-E08 | Failure mapping | exponential sampler + calendar/attachments parsed | GAP | multi-calendar runtime |
@@ -206,7 +218,7 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 | DI-E11 | Initial WIP unknown history auditable | four explicit warnings and counts | PASS | historical facts remain unrecoverable |
 | DI-E12 | raw→parsed→Scenario references | zero ERROR; actual-data tests | PASS-static | full executable Scenario blocked |
 | DI-E13 | Real-data provenance | manifest/raw hashes embedded in smoke result | PASS |
-| DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release slices + sampling decision diagnostic | PASS-limited | sampling slice 不是 physical-duration closure |
-| DI-E15 | BLOCKER count=0 | 5 blocker codes/model；sampling blocker 已关闭 | GAP | count > 0 |
+| DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release/batch slices + sampling decision diagnostic | PASS-limited | batch/sampling slice 不是 physical-duration closure |
+| DI-E15 | BLOCKER count=0 | 显式 v1 batch 配置下 4 blocker codes/model；默认无配置为 5 | GAP | count > 0 |
 
-最终状态：`not_passed_gaps`。本地全量回归 `233 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。
+最终状态：`not_passed_gaps`。本地全量回归 `243 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。显式 v1 batch 配置下剩余 4 类 blocker：load/unload/cascade、rework、setup MINRUN、multi-calendar attachment；默认无配置 audit 另保留 batch 决策配置 blocker。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。
