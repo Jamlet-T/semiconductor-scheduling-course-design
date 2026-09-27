@@ -127,6 +127,162 @@ class SMT2020LoaderTests(unittest.TestCase):
                         self.assertLess(op.rework_step_id, op.step_id)
                         self.assertEqual(op.rework_scope, "lot")
 
+    def test_real_rework_profile_and_initial_wip_mapping_are_preserved(self) -> None:
+        """锁定真实 RWK 静态画像，不把尚未实现的 rework runtime 当作已闭环。"""
+        expected_rework_counts = {
+            "SMT2020_HVLM": 14,
+            "SMT2020_LVHM": 52,
+        }
+        expected_rework_source_sampling_100 = {
+            "SMT2020_HVLM": 6,
+            "SMT2020_LVHM": 22,
+        }
+        expected_initial_wip = {
+            "SMT2020_HVLM": ("Init_Lot_4_194", "part_4", "r_4", 256),
+            "SMT2020_LVHM": ("Init_Lot_2_18", "part_2", "r_2", 461),
+        }
+        expected_rework_wip_positions = {
+            "SMT2020_HVLM": {"return": 88, "middle": 5, "source": 7},
+            "SMT2020_LVHM": {"return": 51, "middle": 6, "source": 3},
+        }
+        expected_dedication_diagnostics = {
+            "SMT2020_HVLM": (5, 13),
+            "SMT2020_LVHM": (17, 42),
+        }
+
+        for model in MODELS:
+            with self.subTest(model=model):
+                static = self.loaded[model].static_model
+                operations = tuple(
+                    operation
+                    for route in static.routes
+                    for operation in route.operations
+                )
+                rework_operations = tuple(
+                    operation
+                    for operation in operations
+                    if operation.rework_step_id is not None
+                )
+                self.assertEqual(
+                    len(rework_operations), expected_rework_counts[model]
+                )
+                self.assertEqual(
+                    sum(source.sample_percent == 100.0 for source in rework_operations),
+                    expected_rework_source_sampling_100[model],
+                )
+                for source in rework_operations:
+                    assert source.rework_step_id is not None
+                    self.assertEqual(
+                        source.step_id - source.rework_step_id,
+                        2,
+                    )
+                    self.assertEqual(source.rework_scope, "lot")
+                    intermediate = next(
+                        operation
+                        for operation in operations
+                        if operation.route_id == source.route_id
+                        and operation.step_id == source.rework_step_id + 1
+                    )
+                    # raw profile 为 source 与中间工序都声明 StepPercent。
+                    self.assertIsNotNone(source.sample_percent)
+                    self.assertIsNotNone(intermediate.sample_percent)
+
+                operation_by_route_step = {
+                    (operation.route_id, operation.step_id): operation
+                    for operation in operations
+                }
+                for source in rework_operations:
+                    assert source.rework_step_id is not None
+                    return_operation = operation_by_route_step[
+                        (source.route_id, source.rework_step_id)
+                    ]
+                    self.assertEqual(
+                        set(source.eligible_machine_ids)
+                        & set(return_operation.eligible_machine_ids),
+                        set(),
+                    )
+                    self.assertNotEqual(
+                        source.tool_family_id, return_operation.tool_family_id
+                    )
+                    self.assertIsNone(return_operation.sample_percent)
+
+                dedication_edges = tuple(
+                    operation for operation in operations
+                    if operation.dedication_target_step_id is not None
+                )
+                endpoint_count = sum(
+                    any(
+                        edge.route_id == source.route_id
+                        and edge.dedication_target_step_id == source.rework_step_id
+                        for edge in dedication_edges
+                    )
+                    for source in rework_operations
+                )
+                closed_span_intersection_count = sum(
+                    any(
+                        edge.route_id == source.route_id
+                        and edge.step_id <= source.step_id
+                        and edge.dedication_target_step_id >= source.rework_step_id
+                        for edge in dedication_edges
+                    )
+                    for source in rework_operations
+                )
+                self.assertEqual(
+                    (endpoint_count, closed_span_intersection_count),
+                    expected_dedication_diagnostics[model],
+                )
+                cqt_edges = tuple(
+                    operation for operation in operations
+                    if operation.cqt_target_step_id is not None
+                )
+                self.assertEqual(
+                    sum(
+                        any(
+                            edge.route_id == source.route_id
+                            and edge.step_id <= source.step_id
+                            and edge.cqt_target_step_id >= source.rework_step_id
+                            for edge in cqt_edges
+                        )
+                        for source in rework_operations
+                    ),
+                    0,
+                )
+
+                products = {
+                    product.product_id: product.route_id
+                    for product in static.products
+                }
+                expected_lot, expected_product, expected_route, expected_step = (
+                    expected_initial_wip[model]
+                )
+                wip = next(item for item in static.initial_wip if item.lot_id == expected_lot)
+                self.assertEqual(
+                    (wip.lot_id, wip.product_id, products[wip.product_id], wip.current_step_id),
+                    (expected_lot, expected_product, expected_route, expected_step),
+                )
+                current_operation = next(
+                    operation
+                    for operation in operations
+                    if operation.route_id == products[wip.product_id]
+                    and operation.step_id == wip.current_step_id
+                )
+                self.assertEqual(current_operation.route_id, expected_route)
+                self.assertIsNotNone(current_operation.rework_step_id)
+                self.assertTrue(current_operation.eligible_machine_ids)
+                self.assertEqual(
+                    self.loaded[model].statistics["initial_wip_rework_position_counts"],
+                    expected_rework_wip_positions[model],
+                )
+                history_warning = next(
+                    item for item in self.loaded[model].loader_audit
+                    if item.code == "DI_REWORK_INITIAL_HISTORY_UNKNOWN"
+                )
+                self.assertEqual(history_warning.severity, "WARNING")
+                self.assertEqual(
+                    {key: dict(history_warning.context)[key] for key in ("return", "middle", "source")},
+                    {key: str(value) for key, value in expected_rework_wip_positions[model].items()},
+                )
+
     def test_setup_batch_cqt_and_dedication_are_actually_mapped(self) -> None:
         expected = {
             "SMT2020_HVLM": (28, 66, 17, 18),

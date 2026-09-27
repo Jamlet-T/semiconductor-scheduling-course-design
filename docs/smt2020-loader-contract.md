@@ -73,7 +73,7 @@ relative_path + size_bytes + SHA-256
 
 ## 5. Initial WIP
 
-Loader 不猜测 initial setup、历史 dedication machine、已开启 CQT 的 source finish time和 wafer-PM counter。它分别产生 `DI_INITIAL_*_UNKNOWN` audit。当前数据可静态识别的未知历史关系为：HVLM CQT 341、dedication 2435；LVHM CQT 433、dedication 1965。默认 0 counter 和空 setup 仍只能是 E 级本地规则。
+Loader 不猜测 initial setup、历史 dedication machine、已开启 CQT 的 source finish time和 wafer-PM counter。它分别产生 `DI_INITIAL_*_UNKNOWN` audit。当前数据可静态识别的未知历史关系为：HVLM CQT 341、dedication 2435；LVHM CQT 433、dedication 1965。返工段的初始 WIP 还会产生 `DI_REWORK_INITIAL_HISTORY_UNKNOWN`，按 return/middle/source 记录位置计数（HVLM 88/5/7，LVHM 51/6/3），不推断此前 visit 或 rework 判定。默认 0 counter 和空 setup 仍只能是 E 级本地规则。
 
 ## 6. Validation slice
 

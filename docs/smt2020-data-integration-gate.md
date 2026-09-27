@@ -45,6 +45,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Sampled CQT target / stochastic sampled CQT target | 4 / 0 | 18 / 0 |
 | Explicit sampling operations using load/unload tool templates | 221 | 955 |
 | Rework operations | 14 | 52 |
+| Initial WIP at rework return / middle / source | 88 / 5 / 7 | 51 / 6 / 3 |
 | Cascading/interval operations | 379 | 1668 |
 | Setup transitions / group members | 13 / 9 | 13 / 9 |
 | Failure / PM calendars | 11 / 292 | 11 / 292 |
@@ -91,7 +92,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | Code | HVLM affected | LVHM affected | Required fix |
 | --- | ---: | ---: | --- |
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing |
-| `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop |
+| `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop；详见 [返工语义审计](smt2020-rework-semantic-audit.md) |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | minimum run hard constraint；详见 [语义审计](smt2020-setup-minrun-audit.md) |
 | `DI_MISSING_BATCH_DECISION_CONFIG` | 28 | 135 | explicit versioned B_target/T_max config |
 | `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 raw attachment rows；351 台多 calendar PM 生产机 | 303 raw attachment rows；307 台多 calendar PM 生产机 | multiple calendars per physical machine；详见 [逐机静态审计](smt2020-multi-calendar-attachment-audit.md) |
@@ -183,6 +184,7 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 - sampling：None/100%/随机百分比、operation-entry skip、initial WIP、CRN 与 provenance 已验证；raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0；真实 sampling blocker 已关闭；
 - p<100 CQT/Dedication endpoint：当前 raw 未出现，Scenario 显式拒绝；若未来出现必须重新进入 blocker，而非 silent fallback；
 - load-unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment：仍列为 5 类 BLOCKER。
+- 初始 WIP 返工历史：loader 以 `DI_REWORK_INITIAL_HISTORY_UNKNOWN` 记录 return/middle/source 位置计数；不伪造 visit、既往判定或原机台绑定。
 - release template：`DI_UNSUPPORTED_RELEASE_TEMPLATES` 已关闭，但仅对 `fixed_horizon + constant RDIST + LOTSPERRPT=1` 声明支持；非 constant、`LOTSPERRPT>1`、非 fixed-horizon 或其他未验证组合仍显式 unsupported。
 
 没有 C 级论文/官方资料被单独用于闭合本轮关键语义。
@@ -207,4 +209,4 @@ warning/provenance: DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD + omitted load/unload mi
 | DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release slices + sampling decision diagnostic | PASS-limited | sampling slice 不是 physical-duration closure |
 | DI-E15 | BLOCKER count=0 | 5 blocker codes/model；sampling blocker 已关闭 | GAP | count > 0 |
 
-最终状态：`not_passed_gaps`。本地全量回归 `229 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。
+最终状态：`not_passed_gaps`。本地全量回归 `230 passed`，Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`；正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。`DI_UNSUPPORTED_SAMPLING` 已关闭；当前剩余 5 类 blocker：load/unload/cascade、rework、setup MINRUN、batch decision config、multi-calendar attachment。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。

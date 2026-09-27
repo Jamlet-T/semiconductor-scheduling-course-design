@@ -826,6 +826,27 @@ def load_smt2020(
         scope: sum(op.rework_scope == scope for op in rework_ops)
         for scope in sorted({op.rework_scope for op in rework_ops if op.rework_scope is not None})
     }
+    rework_segment_steps: dict[str, dict[str, set[int]]] = {}
+    for op in rework_ops:
+        if op.rework_step_id is None:
+            continue
+        positions = rework_segment_steps.setdefault(
+            op.route_id, {"return": set(), "middle": set(), "source": set()}
+        )
+        positions["return"].add(op.rework_step_id)
+        positions["middle"].update(range(op.rework_step_id + 1, op.step_id))
+        positions["source"].add(op.step_id)
+    product_route_ids = {product.product_id: product.route_id for product in products}
+    initial_wip_rework_position_counts = {
+        position: sum(
+            wip.current_step_id
+            in rework_segment_steps.get(
+                product_route_ids[wip.product_id], {}
+            ).get(position, set())
+            for wip in initial_wip
+        )
+        for position in ("return", "middle", "source")
+    }
     cascading_ops = tuple(op for op in operations if op.batch_interval_minutes is not None or op.part_interval_minutes is not None)
     cqt_endpoint_keys = {
         (op.route_id, step_id)
@@ -1030,8 +1051,14 @@ def load_smt2020(
         )
     if rework_ops:
         note("BLOCKER", "DI_UNSUPPORTED_REWORK", "RWKSTEP/REWORK 路线回跳尚未实现", affected=len(rework_ops))
+        if any(initial_wip_rework_position_counts.values()):
+            note(
+                "WARNING", "DI_REWORK_INITIAL_HISTORY_UNKNOWN",
+                "初始 WIP 位于 rework 回跳段；raw 无 visit、既往 rework 判定或原机台历史",
+                **initial_wip_rework_position_counts,
+            )
     if setup_minrun_count:
-        note("BLOCKER", "DI_UNSUPPORTED_SETUP_MINRUN", "setupgrp.MINRUN 尚未进入 runtime", affected=setup_minrun_count)
+        note("BLOCKER", "DI_UNSUPPORTED_SETUP_MINRUN", "setupgrp.MINRUN 已有本地合成 runtime，但真实组合映射未闭环", affected=setup_minrun_count)
     note("BLOCKER", "DI_MISSING_BATCH_DECISION_CONFIG", "B_target/T_max 不在 raw 数据中；正式场景需版本化 loader_config", batch_operations=len(batch_ops))
     if any(item.interval and item.interval.kind == "exponential" for item in down_calendars):
         note("INFO", "DI_EXPONENTIAL_FAILURE_RUNTIME_SUPPORTED", "downcal exponential 已按均值参数进入共享 sampler", calendars=len(down_calendars))
@@ -1147,6 +1174,7 @@ def load_smt2020(
         ),
         "rework_operations": len(rework_ops),
         "rework_scope_counts": rework_scope_counts,
+        "initial_wip_rework_position_counts": initial_wip_rework_position_counts,
         "cascading_operations": len(cascading_ops), "setup_transitions": setup_transition_count,
         "route_location_transition_counts": {
             f"{from_location}->{to_location}": count
