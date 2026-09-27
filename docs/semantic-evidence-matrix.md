@@ -2,9 +2,9 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.5`
+适用契约：Simulation Contract `0.1.6`
 
-审计日期：2026-09-25
+审计日期：2026-09-27
 
 本文只回答“某项语义的依据来自哪里”。它不把微型场景运行时验证等同于正式 SMT2020 数据接入验证。
 
@@ -32,7 +32,7 @@
 | 设备资格 | `STNFAM`、`STN`、`STNQTY` | A/B | tool group 展开到稳定物理 machine ID；动作同时满足 qualification | loader 已展开并由真实 validation slice 使用具体物理机 |
 | 加工时间 | `PDIST`、`PTIME`、`PTIME2`、`PTPER` | A | 按字段指定的分布和 per-piece/per-batch 规则计算 | constant/uniform/exponential 与三种 basis 已接入统一 runtime；cascade interval 另列 blocker |
 | `uniform(m,w)` | 分布参数 | D/E | `Uniform[m-w/2, m+w/2]`，第二参数为全宽 | 原始文件不自描述；属于参考实现支持的本地规则 |
-| Setup | route 的 `SETUP/WHEN/STIME`、setup 表、tool `SETUPGRP` | A/B | 有向换型；严格 resolver；Setup 独立占用 machine | loader 已映射；MINRUN runtime blocker |
+| Setup / MINRUN | route 的 `SETUP/WHEN/STIME`、setup/setupgrp 表、tool `SETUPGRP` | A/B/D/E/F | 有向换型；严格 resolver；MINRUN 本地按成功完成的 lot 数计，初始历史缺失按可审计下界处理 | MINRUN 合成场景 runtime 已实现；与参考实现派工时扣减有意不同；真实组合仍为 blocker |
 | 初始 Setup | 无完整历史记录 | F/E | 默认空 setup，并在 provenance 中标识初始化规则 | 无法声称恢复真实历史状态 |
 | Batch 容量 | `BATCHMN`、`BATCHMX` | A/B | 单位为 wafer；合法批次必须满足最小/最大 wafer 容量 | loader 静态映射与随机 per-batch runtime 已验证；决策配置仍为 blocker |
 | Batch 加工与兼容 | `PTPER`、`BATCHCRITF`、`BATCHPER` | A/B | compatibility 与加工口径按字段组合生成 BatchSpec | 真实字段组合已静态验证；raw 不提供 `B_target/T_max` |

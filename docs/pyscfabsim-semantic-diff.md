@@ -29,7 +29,7 @@
 | Batch min/max 单位 | `classes.py:105-112` 用全局 `pieces_per_lot` 将 wafer 数除成 lot 数 | 结构性冲突 | 内核统一保存 wafer 容量，逐 lot 求和；不得用最大 lot size 全局换算 |
 | Batch 启动 | `greedy.py:22-49` 的 lot-for-machine 要求达到 `batch_max`，`batch_min`只参与排序；`greedy.py:65-73` 的另一方向最多取 `batch_max`，不检查 `batch_min` | 结构性冲突 | 自行实现统一合法候选与启动门槛；低于 `B_min` 一律禁止 |
 | Batch compatibility | 设备优先模式按 `step_name` 分组 | 证据不足 | 对照 `crit_sameroutestep`，用 route+step 显式兼容键做行为测试 |
-| Setup | `instance.py:158-195` 计算 setup 并加到完成时刻；`instance.py:147-156` 只创建 machine/lot done event | 可适配 | 本项目需要独立 setup 状态/事件和明确的转移优先级，不能只加总时间 |
+| Setup / MINRUN | `instance.py:158-195` 将 setup 时长加到完成时刻，并在派工路径读取 `setup_min_run`、按 `len(lots)` 扣减；同 setup 的再次派工也可能重置 counter | 可适配但存在语义差异 | 本项目用独立 setup 状态/事件；MINRUN 若采用成功完成计数，必须作为 E 级本地规则单独验证，不能宣称与参考实现一致 |
 | 跨步 CQT | `classes.py:116-118` 读 `STEP_CQT/CQT`；`instance.py:114-126` 登记与检查 | 结构性冲突 | 源码把相对 `cqt_time` 直接与绝对 `current_time` 比较，疑似时钟错位；改为独立约束和绝对 deadline |
 | Dedication | `instance.py:137-140` 将指定 step 映射到 machine ID；dispatch manager 检查该绑定 | 可适配 | 补 visit 生命周期、初始 WIP 缺失绑定和独立测试 |
 | Failure | `events.py:41-71` 触发停机；`instance.py:205-213` 移除设备完成事件、延后后重新入队 | 可适配 | 行为接近 preemptive-resume；补旧事件版本、lot状态和同刻屏障测试 |

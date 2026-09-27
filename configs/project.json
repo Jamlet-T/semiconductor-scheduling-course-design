@@ -17,7 +17,7 @@
   ],
   "technical_route": {
     "status": "frozen",
-    "contract_version": "0.1.5",
+    "contract_version": "0.1.6",
     "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,

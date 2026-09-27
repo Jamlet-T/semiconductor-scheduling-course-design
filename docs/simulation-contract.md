@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.5`
+版本：`0.1.6`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -138,6 +138,14 @@ start = n >= B_min and (n >= B_target or oldest_eligible_wait >= T_max)
 | 时间来源 | FROZEN | route `STIME` → 精确有向转移 → 空 `CURSETUP` fallback；仍缺失则数据校验失败 |
 | 资源占用 | FROZEN | setup 全程占用具体 machine，结束后才允许加工 |
 | 重复计时 | FROZEN | 一次换型只能计一次，不能同时累加 route 与 transition 两套时间 |
+
+### Setup MINRUN（本地显式规则）
+
+`setupgrp.MINRUN` 以**成功完成的 lot 次数**计，属于本项目 E 级解释，不声称 raw 自行定义了计数时点。只有真实发生 setup 变更并完成 `SETUP_FINISH`，新 setup 的计数才归零；后续每个要求该 setup 的 lot 在有效 `PROCESS_FINISH` 后计 1 次。Failure/PM 中断和 stale finish 不计；`per_piece` 的 wafer 数不替代 lot 次数。当前 raw 的相关 Implant 工序均非 batch；synthetic batch 若使用该机制，按成功完成的成员 lot 分别计数。
+
+未达到当前 setup 的 MINRUN 时，要求切换到另一 setup 的动作在 feasible-action 构造和最终提交两处均被禁止。同 setup 动作可继续；无 setup 要求的动作不构成换型、可派工但不计数。初始 setup/run 历史未给出时，已完成次数只作为从仿真起点起的保守下界；在达到要求前禁止离开该 setup，并将未知历史写入 provenance。空初始 setup 没有 active MINRUN debt；真实模型采用空初始 setup 是本地假设，不是原始设备历史。零时长不得隐式改变 setup 状态。
+
+该规则只定义可审计的本地运行时能力；正式 SMT2020 的 `DI_UNSUPPORTED_SETUP_MINRUN` 在 raw→Scenario 映射、真实组合 slice 和历史假设验收完成前保持 BLOCKER。
 
 ## 6. CQT
 
@@ -290,3 +298,7 @@ MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按�
 ### 0.1.5 修订说明
 
 本版本冻结受限 SMT2020 operation-entry sampling：区分未配置、显式 100% 和随机百分比；随机判定使用稳定 `sampling` 实体索引流，失败产生独立 `OPERATION_SKIPPED`，且发生在派工可见以及首段/下一段 transport 之前。初始 WIP 同样在 `t=0` 判定，策略只看到 sampling 后的工序。真实 sampled CQT target 全部为 p=100，stochastic endpoint 为 0，因此真实 sampling profile 已闭环；`p<100` endpoint 仍显式 unsupported。全部 sampled 工序的 load/unload 未进入诊断 slice，rework visit 也未闭环，二者继续由各自 blocker 管理。
+
+### 0.1.6 修订说明
+
+新增 Setup MINRUN 的合成场景运行时规则：真实换型完成后开始计数，仅有效加工完成按 lot 计数，候选和提交均执行硬约束；初始历史未知以保守下界处理并记录。该完成时计数与固定 PySCFabSim 参考实现的派工时扣减不同，是显式 E 级本地选择。没有因此关闭 SMT2020 MINRUN 的 Data Integration blocker，也未改变 MC01～MC08 的既有事件优先级。

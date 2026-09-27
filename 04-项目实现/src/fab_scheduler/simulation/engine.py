@@ -13,7 +13,12 @@ from statistics import fmean
 from typing import Any
 from collections.abc import Mapping
 
-from fab_scheduler.domain.models import LotSpec, ReleaseTemplateSpec, Scenario
+from fab_scheduler.domain.models import (
+    LotSpec,
+    OperationSpec,
+    ReleaseTemplateSpec,
+    Scenario,
+)
 from fab_scheduler.policies.base import (
     DISPATCH_POLICY_CONTRACT_VERSION,
     DispatchAction,
@@ -64,7 +69,10 @@ from fab_scheduler.simulation.sampling import (
     SAMPLING_STREAM,
     decide_sampling,
 )
-from fab_scheduler.simulation.setup import SetupDurationResolver
+from fab_scheduler.simulation.setup import (
+    SetupDurationResolver,
+    SetupMinimumRunResolver,
+)
 from fab_scheduler.simulation.pm import (
     PM_RUNTIME_SCHEMA_VERSION,
     PMOccurrence,
@@ -145,7 +153,10 @@ class _LotRuntime:
 class _MachineRuntime:
     machine_id: str
     location_id: str | None = None
+    setup_group: str | None = None
     current_setup: str = ""
+    setup_run_count: int = 0
+    setup_run_count_known: bool = False
     status: MachineStatus = MachineStatus.IDLE
     lot_id: str | None = None
     operation_index: int | None = None
@@ -633,6 +644,9 @@ class Simulator:
         self._setup_resolver = SetupDurationResolver(
             scenario.setup_transitions
         )
+        self._setup_minimum_run_resolver = SetupMinimumRunResolver(
+            scenario.setup_minimum_runs
+        )
         self._processing_resolver = ProcessingDurationResolver()
         self._cqt_runtime = CQTRuntime(scenario.cqt_constraints)
         self._dedication_runtime = DedicationRuntime(
@@ -666,10 +680,24 @@ class Simulator:
             machine.machine_id: _MachineRuntime(
                 machine_id=machine.machine_id,
                 location_id=machine.location_id,
+                setup_group=machine.setup_group,
                 current_setup=machine.initial_setup,
+                setup_run_count=machine.initial_setup_run_count or 0,
+                setup_run_count_known=(
+                    machine.initial_setup_run_count is not None
+                ),
             )
             for machine in scenario.machines
         }
+        self._initial_setup_count_unknown = tuple(
+            sorted(
+                machine.machine_id
+                for machine in scenario.machines
+                if machine.setup_group is not None
+                and machine.initial_setup
+                and machine.initial_setup_run_count is None
+            )
+        )
         self._run_id = f"{scenario.scenario_id}:seed={seed}"
         self._git_commit = git_commit or discover_git_commit()
 
@@ -729,6 +757,31 @@ class Simulator:
                 **asdict(self.scenario),
                 "random_stream_scheme": "sha256(seed,stream,entity,occurrence)",
                 "random_sample_ledger_version": RANDOM_SAMPLE_LEDGER_VERSION,
+                "setup_minrun_runtime": {
+                    "schema_version": "0.1.0",
+                    "decision_point": "before_dispatch_commit",
+                    "completed_lot_unit": "successful_PROCESS_FINISH_lot",
+                    "initial_setup_count_unknown": list(
+                        self._initial_setup_count_unknown
+                    ),
+                    "initial_setup_count_unknown_final": sorted(
+                        machine_id
+                        for machine_id, machine in self._machines.items()
+                        if machine.setup_group is not None
+                        and machine.current_setup
+                        and not machine.setup_run_count_known
+                    ),
+                    "machines": {
+                        machine_id: {
+                            "setup_group": machine.setup_group,
+                            "current_setup": machine.current_setup,
+                            "completed_lots": machine.setup_run_count,
+                            "count_known": machine.setup_run_count_known,
+                        }
+                        for machine_id, machine in sorted(self._machines.items())
+                        if machine.setup_group is not None
+                    },
+                },
                 "cqt_runtime_schema_version": CQT_RUNTIME_SCHEMA_VERSION,
                 "dedication_runtime_schema_version": (
                     DEDICATION_RUNTIME_SCHEMA_VERSION
@@ -1782,6 +1835,14 @@ class Simulator:
             operation = lot.spec.operations[lot.operation_index]
             if machine_id not in operation.eligible_machines:
                 continue
+            machine = self._machines[machine_id]
+            if not self._setup_minimum_run_resolver.allows_change(
+                setup_group=machine.setup_group,
+                current_setup=machine.current_setup,
+                completed_lots=machine.setup_run_count,
+                operation=operation,
+            ):
+                continue
             if not self._dedication_runtime.allows_machine(
                 lot_id=lot.spec.lot_id,
                 route_id=operation.route_id,
@@ -2058,6 +2119,13 @@ class Simulator:
             operation = lot.spec.operations[lot.operation_index]
             if machine_id not in operation.eligible_machines:
                 raise SimulationError("Batch member 不再满足设备资格")
+            if not self._setup_minimum_run_resolver.allows_change(
+                setup_group=machine.setup_group,
+                current_setup=machine.current_setup,
+                completed_lots=machine.setup_run_count,
+                operation=operation,
+            ):
+                raise SimulationError("Batch member 被 setup MINRUN 拒绝")
             if not self._dedication_runtime.allows_machine(
                 lot_id=lot.spec.lot_id,
                 route_id=operation.route_id,
@@ -2205,6 +2273,13 @@ class Simulator:
         operation = lot.spec.operations[lot.operation_index]
         if operation.batch_spec is not None:
             raise SimulationError("Batch operation 必须通过原子组批路径提交")
+        if not self._setup_minimum_run_resolver.allows_change(
+            setup_group=machine.setup_group,
+            current_setup=machine.current_setup,
+            completed_lots=machine.setup_run_count,
+            operation=operation,
+        ):
+            raise SimulationError("Dispatch action 被 setup MINRUN 拒绝")
         if machine.active_batch_id is not None:
             raise SimulationError("普通派工时 machine 仍绑定 active batch")
         lot.status = LotStatus.RESERVED
@@ -2233,6 +2308,12 @@ class Simulator:
             current_setup=machine.current_setup,
             operation=operation,
         )
+        if (
+            setup_duration == 0
+            and operation.required_setup is not None
+            and operation.required_setup != machine.current_setup
+        ):
+            raise SimulationError("不同 setup 不允许以零时长隐式切换")
         if setup_duration > 0:
             required_setup = operation.required_setup
             if required_setup is None:
@@ -2381,6 +2462,8 @@ class Simulator:
             state_after="LOT:RESERVED|MACHINE:READY",
         )
         machine.current_setup = machine.setup_to
+        machine.setup_run_count = 0
+        machine.setup_run_count_known = True
         machine.status = MachineStatus.IDLE
         machine.setup_started_at = None
         machine.setup_from = None
@@ -2444,6 +2527,7 @@ class Simulator:
             state_before="LOT:PROCESSING|MACHINE:PROCESSING",
             state_after="LOT:PROCESSED|MACHINE:IDLE",
         )
+        self._account_setup_run_completion(machine=machine, operation=operation)
         self._open_cqt_clocks(
             lot=lot,
             operation=operation,
@@ -2576,6 +2660,10 @@ class Simulator:
                 state_before="LOT:PROCESSING|BATCH:PROCESSING",
                 state_after="LOT:PROCESSED|BATCH:FINISHED",
             )
+            self._account_setup_run_completion(
+                machine=machine,
+                operation=operation,
+            )
             self._open_cqt_clocks(
                 lot=lot,
                 operation=operation,
@@ -2606,6 +2694,22 @@ class Simulator:
             batch_id=batch_id,
         )
         self._ensure_dispatch_barrier()
+
+    def _account_setup_run_completion(
+        self,
+        *,
+        machine: _MachineRuntime,
+        operation: OperationSpec,
+    ) -> None:
+        """成功完成一个声明 setup 的 lot 后增加当前 setup 的完成计数。"""
+
+        if (
+            machine.setup_group is None
+            or operation.required_setup is None
+            or operation.required_setup != machine.current_setup
+        ):
+            return
+        machine.setup_run_count += 1
 
     def _account_completed_wafers(
         self,

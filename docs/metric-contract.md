@@ -1,6 +1,6 @@
 # Metric Contract：M1 指标口径与实现审计
 
-适用版本：Simulation Contract `0.1.5`
+适用版本：Simulation Contract `0.1.6`
 
 审计范围：可信轻量 DES；不代表正式 SMT2020 数据链已接入
 

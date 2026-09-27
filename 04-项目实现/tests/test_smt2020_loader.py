@@ -147,6 +147,35 @@ class SMT2020LoaderTests(unittest.TestCase):
         self.assertEqual(self.loaded["SMT2020_HVLM"].statistics["rework_scope_counts"], {"lot": 14})
         self.assertEqual(self.loaded["SMT2020_LVHM"].statistics["rework_scope_counts"], {"lot": 52})
 
+    def test_real_implant_minrun_three_table_links_remain_explicit(self) -> None:
+        expected = {"SMT2020_HVLM": (35, 24), "SMT2020_LVHM": (169, 25)}
+        for model, (operation_count, machine_count) in expected.items():
+            with self.subTest(model=model):
+                static = self.loaded[model].static_model
+                members = tuple(static.setup_group_members)
+                self.assertEqual(len(members), 9)
+                self.assertEqual({item.setup_group for item in members}, {"Implant_Gas"})
+                self.assertEqual({item.minimum_run for item in members}, {7})
+                configured_setups = {item.setup_id for item in members}
+                self.assertEqual(len(configured_setups), 9)
+                templates = tuple(
+                    item for item in static.machine_templates
+                    if item.setup_group == "Implant_Gas"
+                )
+                families = {item.tool_family_id for item in templates}
+                self.assertEqual(families, {"Implant_128", "Implant_132", "Implant_91"})
+                self.assertEqual(sum(item.quantity for item in templates), machine_count)
+                operations = tuple(
+                    operation
+                    for route in static.routes
+                    for operation in route.operations
+                    if operation.tool_family_id in families
+                )
+                self.assertEqual(len(operations), operation_count)
+                self.assertTrue(all(item.required_setup in configured_setups for item in operations))
+                self.assertTrue(all(item.processing_basis == "per_piece" for item in operations))
+                self.assertTrue(all(item.batch_min_wafers is None for item in operations))
+
     def test_transport_validation_slice_honors_product_selector(self) -> None:
         loaded = load_smt2020(
             DATASETS_ROOT,
@@ -286,6 +315,100 @@ class SMT2020LoaderTests(unittest.TestCase):
             evidence = {item.topic: item for item in loaded.semantic_evidence}
             self.assertEqual(evidence["transport-runtime"].level, "A/B/D/E")
             self.assertIn("显式审计", evidence["transport-runtime"].interpretation)
+
+    def test_calendar_attachments_expand_to_physical_machine_audit_counts(self) -> None:
+        expected = {
+            "SMT2020_HVLM": {
+                "expanded_edges": 4024,
+                "physical_machines": 1043,
+                "multi_calendar_pm_machines": 351,
+                "max_calendar_pm_per_machine": 3,
+                "distributions": {
+                    "failure": {1: 1043},
+                    "calendar_pm": {0: 692, 2: 148, 3: 203},
+                    "wafer_pm": {0: 351, 3: 692},
+                },
+                "sample_machine": ("DE_BE_11#0001", {"failure": 1, "calendar_pm": 0, "wafer_pm": 3}),
+            },
+            "SMT2020_LVHM": {
+                "expanded_edges": 3515,
+                "physical_machines": 913,
+                "multi_calendar_pm_machines": 307,
+                "max_calendar_pm_per_machine": 3,
+                "distributions": {
+                    "failure": {1: 913},
+                    "calendar_pm": {0: 606, 2: 137, 3: 170},
+                    "wafer_pm": {0: 307, 3: 606},
+                },
+                "sample_machine": ("DE_BE_11#0001", {"failure": 1, "calendar_pm": 0, "wafer_pm": 3}),
+            },
+        }
+        for model, values in expected.items():
+            with self.subTest(model=model):
+                loaded = self.loaded[model]
+                stats = loaded.statistics
+                self.assertEqual(stats["calendar_attachments"], 303)
+                self.assertEqual(stats["attachment_expanded_machine_edges"], values["expanded_edges"])
+                self.assertEqual(stats["attachment_physical_machine_count"], values["physical_machines"])
+                self.assertEqual(stats["attachment_physical_machine_count_total"], values["physical_machines"])
+                self.assertEqual(
+                    stats["attachment_physical_machines_with_multi_calendar_pm"],
+                    values["multi_calendar_pm_machines"],
+                )
+                self.assertEqual(
+                    stats["attachment_max_calendar_pm_per_machine"],
+                    values["max_calendar_pm_per_machine"],
+                )
+                self.assertEqual(stats["attachment_machine_count_distributions"], values["distributions"])
+                sample_machine, sample_counts = values["sample_machine"]
+                self.assertEqual(
+                    stats["attachment_machine_counts_by_physical_machine"][sample_machine],
+                    sample_counts,
+                )
+                blocker = next(
+                    item
+                    for item in loaded.loader_audit
+                    if item.code == "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT"
+                )
+                context = dict(blocker.context)
+                self.assertEqual(context["raw_attachment_rows"], "303")
+                self.assertEqual(
+                    context["physical_machines_with_multi_calendar_pm"],
+                    str(values["multi_calendar_pm_machines"]),
+                )
+
+    def test_unknown_attachment_type_or_target_type_is_not_silently_ignored(self) -> None:
+        def load_attach_variant(field: str, value: str):
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder) / "datasets"
+                shutil.copytree(DATASETS_ROOT / "SMT2020_HVLM", root / "SMT2020_HVLM")
+                attach_path = root / "SMT2020_HVLM" / "attach.txt"
+                lines = attach_path.read_text(encoding="utf-8").splitlines()
+                header = lines[0].split("\t")
+                fields = lines[1].split("\t")
+                fields[header.index(field)] = value
+                lines[1] = "\t".join(fields)
+                attach_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                return load_smt2020(root, "SMT2020_HVLM")
+
+        with self.assertRaises(LoaderError) as caltype_error:
+            load_attach_variant("CALTYPE", "unknown")
+        self.assertIn(
+            "DI_UNSUPPORTED_ATTACHMENT_TYPE",
+            {item.code for item in caltype_error.exception.entries},
+        )
+        with self.assertRaises(LoaderError) as restype_error:
+            load_attach_variant("RESTYPE", "unknown")
+        self.assertIn(
+            "DI_UNSUPPORTED_ATTACHMENT_TARGET_TYPE",
+            {item.code for item in restype_error.exception.entries},
+        )
+        with self.assertRaises(LoaderError) as calendar_type_error:
+            load_attach_variant("CALTYPE", "pm")
+        self.assertIn(
+            "DI_ATTACHMENT_CALENDAR_TYPE_MISMATCH",
+            {item.code for item in calendar_type_error.exception.entries},
+        )
 
     def test_real_route_location_transitions_and_missing_pairs_are_audited(self) -> None:
         expected = {

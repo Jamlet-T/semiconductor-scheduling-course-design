@@ -253,12 +253,24 @@ class MachineSpec:
     unload_minutes: float = 0.0
     cascading: bool = False
     location_id: str | None = None
+    setup_group: str | None = None
+    initial_setup_run_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.machine_id:
             raise ValueError("machine_id 不能为空")
         if self.load_minutes < 0 or self.unload_minutes < 0:
             raise ValueError("load/unload time 不能为负")
+        if self.setup_group == "":
+            raise ValueError("setup_group 不能为空字符串")
+        if self.initial_setup_run_count is not None and (
+            isinstance(self.initial_setup_run_count, bool)
+            or not isinstance(self.initial_setup_run_count, int)
+            or self.initial_setup_run_count < 0
+        ):
+            raise ValueError("initial_setup_run_count 必须为非负整数或 None")
+        if self.initial_setup_run_count is not None and not self.initial_setup:
+            raise ValueError("空 initial_setup 不允许提供 setup run count")
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +369,27 @@ class OperationSpec:
                 raise ValueError("sampling operation 不支持 part_interval_minutes")
             if self.batch_interval_minutes is not None:
                 raise ValueError("sampling operation 不支持 batch_interval_minutes")
+
+
+@dataclass(frozen=True, slots=True)
+class SetupMinimumRun:
+    """一个 setup group 中某个 setup 的最小连续 lot 数。"""
+
+    setup_group: str
+    setup: str
+    minimum_run: int
+
+    def __post_init__(self) -> None:
+        if not self.setup_group:
+            raise ValueError("setup_group 不能为空")
+        if not self.setup:
+            raise ValueError("setup 不能为空")
+        if (
+            isinstance(self.minimum_run, bool)
+            or not isinstance(self.minimum_run, int)
+            or self.minimum_run <= 0
+        ):
+            raise ValueError("setup minimum_run 必须为正整数")
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +555,7 @@ class Scenario:
     dataset_provenance: DatasetProvenanceSpec | None = None
     transport_specs: tuple[TransportSpec, ...] = ()
     release_templates: tuple[ReleaseTemplateSpec, ...] = ()
+    setup_minimum_runs: tuple[SetupMinimumRun, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.scenario_id:
@@ -601,6 +635,15 @@ class Scenario:
         ]
         if len(transition_keys) != len(set(transition_keys)):
             raise ValueError("setup transition 不能重复")
+        setup_minimum_run_keys = [
+            (item.setup_group, item.setup) for item in self.setup_minimum_runs
+        ]
+        if len(setup_minimum_run_keys) != len(set(setup_minimum_run_keys)):
+            raise ValueError("setup minimum_run 配置不能重复")
+        configured_setup_groups = {machine.setup_group for machine in self.machines}
+        for item in self.setup_minimum_runs:
+            if item.setup_group not in configured_setup_groups:
+                raise ValueError("setup minimum_run 引用了不存在的 machine setup_group")
         constraint_ids = [
             constraint.constraint_id
             for constraint in self.cqt_constraints

@@ -472,7 +472,7 @@ def load_smt2020(
 
     machine_templates: list[MachineTemplateDefinition] = []
     family_machines: dict[str, list[str]] = {}
-    group_names: set[str] = set()
+    group_machines: dict[str, list[str]] = {}
     for row in tool_rows:
         quantity = _int(row["STNQTY"])
         if quantity <= 0:
@@ -480,7 +480,7 @@ def load_smt2020(
             continue
         machine_ids = tuple(f"{row['STN']}#{index:04d}" for index in range(1, quantity + 1))
         family_machines.setdefault(row["STNFAM"], []).extend(machine_ids)
-        group_names.add(row["STNGRP"])
+        group_machines.setdefault(row["STNGRP"], []).extend(machine_ids)
         machine_templates.append(MachineTemplateDefinition(
             row["STNFAM"], row["STN"], row["STNGRP"], row["STNFAMLOC"], quantity,
             machine_ids,
@@ -706,13 +706,28 @@ def load_smt2020(
         for row in pm_rows
     )
     calendar_ids = {item.calendar_id for item in down_calendars + pm_calendars}
+    down_calendar_ids = {item.calendar_id for item in down_calendars}
+    pm_calendar_by_id = {item.calendar_id: item for item in pm_calendars}
     attachments: list[CalendarAttachmentDefinition] = []
     for row in attach_rows:
         if row["CALNAME"] not in calendar_ids:
             note("ERROR", "DI_UNKNOWN_CALENDAR", "attach 引用未知 calendar", calendar=row["CALNAME"])
-        valid_target = row["RESNAME"] in (set(family_machines) if row["RESTYPE"] == "stnfam" else group_names)
+        if row["CALTYPE"] not in {"down", "pm"}:
+            note("ERROR", "DI_UNSUPPORTED_ATTACHMENT_TYPE", "attach.CALTYPE 必须为 down 或 pm", calendar=row["CALNAME"], caltype=row["CALTYPE"])
+        if row["RESTYPE"] == "stnfam":
+            target_machines = family_machines.get(row["RESNAME"], [])
+        elif row["RESTYPE"] == "stngrp":
+            target_machines = group_machines.get(row["RESNAME"], [])
+        else:
+            target_machines = []
+            note("ERROR", "DI_UNSUPPORTED_ATTACHMENT_TARGET_TYPE", "attach.RESTYPE 必须为 stnfam 或 stngrp", calendar=row["CALNAME"], restype=row["RESTYPE"])
+        valid_target = bool(target_machines)
         if not valid_target:
             note("ERROR", "DI_UNKNOWN_ATTACHMENT_TARGET", "attach 引用未知设备资源", calendar=row["CALNAME"], target=row["RESNAME"])
+        if row["CALTYPE"] == "down" and row["CALNAME"] not in down_calendar_ids:
+            note("ERROR", "DI_ATTACHMENT_CALENDAR_TYPE_MISMATCH", "down attachment 必须引用 downcal", calendar=row["CALNAME"])
+        if row["CALTYPE"] == "pm" and row["CALNAME"] not in pm_calendar_by_id:
+            note("ERROR", "DI_ATTACHMENT_CALENDAR_TYPE_MISMATCH", "pm attachment 必须引用 pmcal", calendar=row["CALNAME"])
         if row["FOAUNITS"]:
             first = parse_distribution(row["FOADIST"], row["FOA"], "", row["FOAUNITS"])
             first_wafers = None
@@ -720,6 +735,64 @@ def load_smt2020(
             first = None
             first_wafers = _int(row["FOA"])
         attachments.append(CalendarAttachmentDefinition(row["CALNAME"], row["CALTYPE"], row["RESTYPE"], row["RESNAME"], first, first_wafers))
+
+    # Static attachment expansion only: this does not construct a runtime Scenario.
+    # Keep one record per production physical machine so the audit distinguishes
+    # raw attachment rows from the machines affected by those rows.
+    location_by_machine = {
+        machine_id: template.location_id
+        for template in machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+    production_machine_ids = tuple(sorted(
+        machine_id
+        for machine_id, location in location_by_machine.items()
+        if location != "Delay"
+    ))
+    attachment_machine_counts: dict[str, dict[str, int]] = {
+        machine_id: {"failure": 0, "calendar_pm": 0, "wafer_pm": 0}
+        for machine_id in production_machine_ids
+    }
+    expanded_attachment_edges = 0
+    for attachment in attachments:
+        if attachment.resource_type == "stnfam":
+            target_machines = family_machines.get(attachment.resource_name, ())
+        elif attachment.resource_type == "stngrp":
+            target_machines = group_machines.get(attachment.resource_name, ())
+        else:
+            target_machines = ()
+        if attachment.calendar_kind == "down":
+            bucket = "failure"
+        elif attachment.calendar_kind == "pm":
+            calendar = pm_calendar_by_id.get(attachment.calendar_id)
+            if calendar is None:
+                continue
+            bucket = "calendar_pm" if calendar.interval is not None else "wafer_pm"
+        else:
+            continue
+        for machine_id in target_machines:
+            if machine_id in attachment_machine_counts:
+                attachment_machine_counts[machine_id][bucket] += 1
+                expanded_attachment_edges += 1
+
+    attachment_count_distributions = {
+        bucket: {
+            count: sum(values[bucket] == count for values in attachment_machine_counts.values())
+            for count in sorted({values[bucket] for values in attachment_machine_counts.values()})
+        }
+        for bucket in ("failure", "calendar_pm", "wafer_pm")
+    }
+    machines_with_attachments = sum(
+        any(value > 0 for value in counts.values())
+        for counts in attachment_machine_counts.values()
+    )
+    machines_with_multi_calendar_pm = sum(
+        counts["calendar_pm"] > 1 for counts in attachment_machine_counts.values()
+    )
+    max_calendar_pm_per_machine = max(
+        (counts["calendar_pm"] for counts in attachment_machine_counts.values()),
+        default=0,
+    )
 
     setup_transitions = tuple(
         SetupTransitionDefinition(
@@ -962,7 +1035,28 @@ def load_smt2020(
     note("BLOCKER", "DI_MISSING_BATCH_DECISION_CONFIG", "B_target/T_max 不在 raw 数据中；正式场景需版本化 loader_config", batch_operations=len(batch_ops))
     if any(item.interval and item.interval.kind == "exponential" for item in down_calendars):
         note("INFO", "DI_EXPONENTIAL_FAILURE_RUNTIME_SUPPORTED", "downcal exponential 已按均值参数进入共享 sampler", calendars=len(down_calendars))
-    note("BLOCKER", "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT", "同一物理机可能附着多条 Failure/PM calendar，而当前 Scenario 每类每机最多一条", attachments=len(attachments))
+    note(
+        "BLOCKER",
+        "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
+        "同一物理机附着多条 Failure/PM calendar，而当前 Scenario 每类每机最多一条；attachments 是 raw 行数，物理机展开计数见 statistics",
+        attachments=len(attachments),
+        raw_attachment_rows=len(attachments),
+        physical_machines_with_attachments=machines_with_attachments,
+        physical_machines_with_multi_calendar_pm=machines_with_multi_calendar_pm,
+        calendar_pm_attachment_rows=sum(
+            item.calendar_kind == "pm"
+            and pm_calendar_by_id.get(item.calendar_id) is not None
+            and pm_calendar_by_id[item.calendar_id].interval is not None
+            for item in attachments
+        ),
+        wafer_pm_attachment_rows=sum(
+            item.calendar_kind == "pm"
+            and pm_calendar_by_id.get(item.calendar_id) is not None
+            and pm_calendar_by_id[item.calendar_id].wafer_threshold is not None
+            for item in attachments
+        ),
+        failure_attachment_rows=sum(item.calendar_kind == "down" for item in attachments),
+    )
     note(
         "WARNING", "DI_INITIAL_SETUP_UNKNOWN",
         "原始数据不含每台生产机初始 setup；保持显式 unknown/fallback",
@@ -1068,6 +1162,16 @@ def load_smt2020(
         "processing_distribution_kinds": {kind: sum(op.processing.kind == kind for op in operations) for kind in sorted({op.processing.kind for op in operations})},
         "processing_basis_counts": {basis: sum(op.processing_basis == basis for op in operations) for basis in sorted({op.processing_basis for op in operations})},
         "failure_calendars": len(down_calendars), "pm_calendars": len(pm_calendars), "calendar_attachments": len(attachments),
+        "attachment_expanded_machine_edges": expanded_attachment_edges,
+        "attachment_physical_machine_count": machines_with_attachments,
+        "attachment_physical_machine_count_total": len(production_machine_ids),
+        "attachment_physical_machines_with_multi_calendar_pm": machines_with_multi_calendar_pm,
+        "attachment_max_calendar_pm_per_machine": max_calendar_pm_per_machine,
+        "attachment_machine_count_distributions": attachment_count_distributions,
+        "attachment_machine_counts_by_physical_machine": {
+            machine_id: dict(attachment_machine_counts[machine_id])
+            for machine_id in production_machine_ids
+        },
         "transport_pairs": len(transport), "unknown_initial_cqt_relationships": unknown_cqt,
         "unknown_initial_dedication_relationships": unknown_dedication,
         "raw_rows": {"part": len(part_rows), "route": raw_operation_count, "tool": len(tool_rows), "order": len(order_rows), "wip": len(wip_rows)},

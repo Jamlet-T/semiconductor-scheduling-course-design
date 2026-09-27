@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.3`
+版本：`0.1.4`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -174,7 +174,7 @@ and (n_wafers >= B_target or feasible_wait >= T_max)
 | `route.STIME/STUNITS` | `OperationSpec.setup_override_minutes` | 非空时优先作为该工序的 setup 时长 |
 | `setup.CURSETUP/NEWSETUP` | `SetupTransition(from,to)` | 有向转移，不自动对称 |
 | `setup` 中空 `CURSETUP` | 初始/通用转移 | 当前 setup 无精确转移时的 fallback |
-| `setupgrp.SETUP/MINRUN` | `SetupMinimumRun` | 换到该 setup 后，达到最小 run 数前禁止再次换型 |
+| `setupgrp.SETUP/MINRUN` | `SetupMinimumRun` | 换到该 setup 后，达到最小 run 数前禁止再次换型；本地以成功完成的 lot 数计，非 raw 自描述 |
 | `tool.SETUPGRP` | `Machine.setup_group` | 连接机台和 setup 组 |
 
 时长解析顺序冻结为：
@@ -186,7 +186,7 @@ route.STIME
 → 数据契约错误
 ```
 
-机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 loader 已映射 transition、setup group 与 MINRUN；MINRUN 尚未进入 runtime，初始 setup 仍为不可恢复历史。
+机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 loader 已映射 transition、setup group 与 MINRUN；MINRUN 已有合成场景的本地硬约束运行时和 provenance，但尚无真实 raw→Scenario→runtime 组合闭环，`DI_UNSUPPORTED_SETUP_MINRUN` 仍是 Gate blocker。初始 setup 与历史 run count 仍不可从 raw 恢复；空初始 setup 是 E 级规则。计数时点和无 setup 工序处理见 Simulation Contract `0.1.6`，与固定 PySCFabSim 的派工时扣减不同。
 
 ## 9. CQT
 
@@ -261,7 +261,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.5",
+  "simulation_contract_version": "0.1.6",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,

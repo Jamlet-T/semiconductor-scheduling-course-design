@@ -58,10 +58,12 @@ relative_path + size_bytes + SHA-256
 | `WIP.CURSTEP` | step | `InitialWipDefinition` | t=0 在该 step 前等待；必须属于产品 route | A+B |
 | `downcal` | time distribution | failure calendar | calendar、repair 分布均保存 | A |
 | `pmcal` | calendar/pieces | PM calendar | calendar interval 转分钟；pieces 保留 wafer/piece 阈值单位 | A |
-| `attach` | — | calendar attachment | calendar 与 stnfam/stngrp target 必须存在 | A+B |
+| `attach` | — | calendar attachment + 逐物理机审计 | calendar 与 stnfam/stngrp target 必须存在；CALTYPE/RESTYPE 与 calendar 类型严格校验；保留 raw 行数及展开边数 | A+B |
 | `fromto` | min | `TransportDefinition` | 当前两模型均为 `Fab→Fab uniform(7.5,2.5)` | A+D |
 
 证据级别：A=raw 字段直接证据，B=raw 跨表推导，D=参考实现解释，E=本项目假设，F=原始历史不可恢复。
+
+多 calendar 静态审计会将 `stnfam/stngrp` 附件展开至稳定物理机 ID，并分别统计 failure、calendar PM、wafer PM 的逐机连接。统计的追加不改变 `SMT2020StaticModel` 映射或 manifest 的 loader version；完整 Scenario 仍因同机多 calendar runtime 缺口返回 `None`。见 [逐机审计](smt2020-multi-calendar-attachment-audit.md)。
 
 ## 4. Distribution parser
 

@@ -1,6 +1,6 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.5`
+适用版本：Simulation Contract `0.1.6`
 当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release/sampling profile；MC01～MC08 保持 verified
 
 锁定能力：正式 SMT2020 loader、优化器
@@ -209,4 +209,4 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 | SMT2020 release template | VERIFIED-LIMITED-SLICE | fixed-horizon 惰性投放、index-0 `RPT#`、namespaced stable ID、due 平移；仅 constant RDIST + LOTSPERRPT=1 |
 | SMT2020 sampling | VERIFIED-RUNTIME / DIAGNOSTIC-SLICE | None/100%/随机百分比、连续/末尾 skip、initial WIP、CRN、p100-CQT integration、provenance 与独立 audit；p<100 endpoint 拒绝，slice 不表达 raw tool load/unload duration |
 
-MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport、Release Template 与 Sampling 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.5` 新增 sampling profile，但不改变 MC01～MC08 既有语义；M1 状态保持 `passed`。raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0，sampling blocker 已关闭；诊断 slice 没有执行全部 sampled 工序共有的 1 分钟 load/unload，故 Data Integration Gate 仍有 5 类 blocker、状态为 `not_passed_gaps`，优化器继续禁用。
+MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport、Release Template 与 Sampling 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.5` 新增 sampling profile，`0.1.6` 增加合成场景 Setup MINRUN 硬约束；均不改变 MC01～MC08 既有事件优先级，M1 状态保持 `passed`。raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0，sampling blocker 已关闭；MINRUN 真实组合仍未闭环。诊断 slice 没有执行全部 sampled 工序共有的 1 分钟 load/unload，故 Data Integration Gate 仍有 5 类 blocker、状态为 `not_passed_gaps`，优化器继续禁用。

@@ -43,6 +43,7 @@ class ResultInvariantAudit:
 _SAMPLING_STREAM = "sampling"
 _SAMPLING_RUNTIME_SCHEMA_VERSION = "0.1.0"
 _SAMPLING_RUNTIME_ID = "per_lot_sampling"
+_SETUP_MINRUN_RUNTIME_SCHEMA_VERSION = "0.1.0"
 
 
 def _sampling_operation_key(record: TraceRecord) -> tuple[Any, ...]:
@@ -530,6 +531,308 @@ def recompute_trace_metrics(
     )
 
 
+def _audit_setup_minrun_invariants(
+    result: SimulationResult,
+    scenario: Scenario,
+) -> list[str]:
+    """独立从 trace 重算 Setup MINRUN 的运行时状态。
+
+    这里不读取 simulator 的私有 machine 状态、``setup_intervals`` 或最终
+    metrics。换型是否发生由 ``SETUP_START/SETUP_FINISH`` 事件决定，连续
+    run 只由对应 machine 上有效的 ``PROCESS_FINISH``（包括 batch member）
+    增加。这样即使 runtime 同时篡改了最终计数，trace 中的提前换型仍会被
+    单独发现。
+
+    事件日志没有记录“未被提交的候选动作”，因此本检查器的证明边界是：
+    所有已经提交的普通或 batch 动作均满足 MINRUN；它不把缺失的候选动作
+    猜测成可审计证据。
+    """
+
+    violations: list[str] = []
+    runtime = result.provenance.simulation_config.get("setup_minrun_runtime")
+    if not isinstance(runtime, Mapping):
+        # 没有 setup group / MINRUN 配置的旧结果不需要强制声明 runtime；
+        # 有配置时则必须存在 provenance，否则无法宣称可审计。
+        if scenario.setup_minimum_runs or any(
+            machine.setup_group is not None for machine in scenario.machines
+        ):
+            violations.append("provenance setup MINRUN runtime 缺失")
+        return violations
+
+    if runtime.get("schema_version") != _SETUP_MINRUN_RUNTIME_SCHEMA_VERSION:
+        violations.append("provenance setup MINRUN runtime schema 不一致")
+    if runtime.get("decision_point") != "before_dispatch_commit":
+        violations.append("provenance setup MINRUN decision point 不一致")
+    if runtime.get("completed_lot_unit") != "successful_PROCESS_FINISH_lot":
+        violations.append("provenance setup MINRUN completed lot unit 不一致")
+
+    minimum_runs = {
+        (item.setup_group, item.setup): item.minimum_run
+        for item in scenario.setup_minimum_runs
+    }
+    machines = {machine.machine_id: machine for machine in scenario.machines}
+    state: dict[str, dict[str, Any]] = {
+        machine.machine_id: {
+            "setup_group": machine.setup_group,
+            "current_setup": machine.initial_setup,
+            "completed_lots": machine.initial_setup_run_count or 0,
+            "count_known": machine.initial_setup_run_count is not None,
+        }
+        for machine in scenario.machines
+    }
+    active_setup: dict[str, tuple[str | None, str, int, str]] = {}
+
+    # Explicit lots are directly addressable. Release-template lots are mapped
+    # lazily from their LOT_RELEASE witness, because they are not materialized
+    # in Scenario.lots before runtime.
+    operations_by_lot: dict[str, dict[tuple[str, int], Any]] = {}
+    for lot in scenario.lots:
+        operations_by_lot[lot.lot_id] = {
+            (operation.route_id, operation.step_id): operation
+            for operation in lot.operations
+        }
+    templates = {
+        template.template_id: template for template in scenario.release_templates
+    }
+    for record in result.trace:
+        if record.event_type != "LOT_RELEASE" or record.lot_id is None:
+            continue
+        template = templates.get(record.release_template_id)
+        if template is not None:
+            operations_by_lot.setdefault(
+                record.lot_id,
+                {
+                    (operation.route_id, operation.step_id): operation
+                    for operation in template.operations
+                },
+            )
+
+    def operation_for(record: TraceRecord) -> Any | None:
+        if record.lot_id is None:
+            return None
+        operations = operations_by_lot.get(record.lot_id)
+        if operations is None or record.route_id is None or record.step_id is None:
+            return None
+        return operations.get((record.route_id, record.step_id))
+
+    def check_change_allowed(
+        machine_id: str,
+        required_setup: str | None,
+        event_name: str,
+    ) -> None:
+        machine_state = state[machine_id]
+        current_setup = machine_state["current_setup"]
+        if required_setup is None or required_setup == current_setup:
+            return
+        setup_group = machine_state["setup_group"]
+        minimum_run = minimum_runs.get((setup_group, current_setup))
+        if (
+            setup_group is not None
+            and current_setup
+            and minimum_run is not None
+            and machine_state["completed_lots"] < minimum_run
+        ):
+            violations.append(
+                f"{event_name} 违反 setup MINRUN：{machine_id} "
+                f"{current_setup!r}->{required_setup!r}, "
+                f"completed={machine_state['completed_lots']}, "
+                f"minimum={minimum_run}"
+            )
+
+    for record in sorted(result.trace, key=lambda item: item.event_seq):
+        event = record.event_type
+        machine_id = record.machine_id
+        if event not in {
+            "DISPATCH",
+            "BATCH_FORMED",
+            "SETUP_START",
+            "SETUP_FINISH",
+            "SETUP_FINISH_STALE",
+            "SETUP_SUSPEND",
+            "SETUP_RESUME",
+            "PROCESS_START",
+            "PROCESS_FINISH",
+        }:
+            continue
+        if machine_id is None or machine_id not in state:
+            # BATCH_FORMED carries machine_id; an absent/unknown machine cannot
+            # be interpreted as a valid action and must not be silently skipped.
+            violations.append(f"{event} 缺少有效 machine_id：{machine_id!r}")
+            continue
+        machine_state = state[machine_id]
+
+        if event == "DISPATCH":
+            operation = operation_for(record)
+            if operation is None:
+                violations.append(f"DISPATCH 缺少可解析 operation：{record.lot_id!r}")
+            else:
+                check_change_allowed(
+                    machine_id,
+                    operation.required_setup,
+                    "DISPATCH",
+                )
+            continue
+
+        if event == "BATCH_FORMED":
+            member_ids = record.batch_member_lot_ids or ()
+            if not member_ids:
+                violations.append("BATCH_FORMED 缺少 batch member lot identity")
+                continue
+            for lot_id in member_ids:
+                operations = operations_by_lot.get(lot_id)
+                operation = (
+                    operations.get((record.route_id, record.step_id))
+                    if operations is not None
+                    and record.route_id is not None
+                    and record.step_id is not None
+                    else None
+                )
+                if operation is None:
+                    violations.append(
+                        f"BATCH_FORMED 缺少可解析 member operation：{lot_id!r}"
+                    )
+                    continue
+                check_change_allowed(
+                    machine_id,
+                    operation.required_setup,
+                    "BATCH_FORMED",
+                )
+            continue
+
+        operation = operation_for(record)
+        if operation is None:
+            violations.append(f"{event} 缺少可解析 operation：{record.lot_id!r}")
+            continue
+
+        if event == "SETUP_START":
+            required_setup = operation.required_setup
+            if required_setup is None or required_setup == machine_state["current_setup"]:
+                violations.append(
+                    f"SETUP_START 不构成真实 setup 变更：{record.lot_id!r}"
+                )
+            else:
+                check_change_allowed(machine_id, required_setup, "SETUP_START")
+                if machine_id in active_setup:
+                    violations.append(f"machine {machine_id} 重复 SETUP_START")
+                active_setup[machine_id] = (
+                    record.lot_id,
+                    operation.route_id,
+                    operation.step_id,
+                    required_setup,
+                )
+            continue
+
+        if event == "SETUP_FINISH_STALE":
+            # Stale finish is explicitly no-effect by contract. It must never
+            # reset setup count or current setup.
+            continue
+
+        if event in {"SETUP_SUSPEND", "SETUP_RESUME"}:
+            interrupted = record.interrupted_activity_kind
+            if machine_id not in active_setup or interrupted != "setup":
+                violations.append(
+                    f"{event} 没有对应 active setup：{machine_id!r}"
+                )
+            continue
+
+        if event == "SETUP_FINISH":
+            current = active_setup.get(machine_id)
+            if current is None:
+                violations.append(f"SETUP_FINISH 没有对应 SETUP_START：{machine_id!r}")
+                continue
+            expected_lot, expected_route, expected_step, target_setup = current
+            if (
+                record.lot_id != expected_lot
+                or operation.route_id != expected_route
+                or operation.step_id != expected_step
+                or operation.required_setup != target_setup
+            ):
+                violations.append(
+                    f"SETUP_FINISH 与 SETUP_START identity 不一致：{machine_id!r}"
+                )
+                continue
+            machine_state["current_setup"] = target_setup
+            machine_state["completed_lots"] = 0
+            machine_state["count_known"] = True
+            del active_setup[machine_id]
+            continue
+
+        if event == "PROCESS_START":
+            if (
+                operation.required_setup is not None
+                and operation.required_setup != machine_state["current_setup"]
+            ):
+                violations.append(
+                    f"PROCESS_START setup 尚未完成：{record.lot_id!r} on {machine_id}"
+                )
+            continue
+
+        # Only valid PROCESS_FINISH reaches this branch. PROCESS_FINISH_STALE
+        # is intentionally outside the set above and therefore cannot count.
+        if event == "PROCESS_FINISH":
+            required_setup = operation.required_setup
+            if required_setup is not None and required_setup != machine_state["current_setup"]:
+                violations.append(
+                    f"PROCESS_FINISH setup 与 machine 当前 setup 不一致："
+                    f"{record.lot_id!r} on {machine_id}"
+                )
+            elif (
+                machine_state["setup_group"] is not None
+                and required_setup is not None
+            ):
+                machine_state["completed_lots"] += 1
+
+    # An active setup at a fixed horizon is valid (it is an unfinished setup),
+    # so do not require every SETUP_START to have a finish event.
+    runtime_machines = runtime.get("machines")
+    if not isinstance(runtime_machines, Mapping):
+        violations.append("provenance setup MINRUN machines 缺失")
+    else:
+        for machine_id, machine in machines.items():
+            if machine.setup_group is None:
+                # Runtime provenance intentionally omits machines for which
+                # setup MINRUN cannot apply.
+                continue
+            expected = state[machine_id]
+            actual = runtime_machines.get(machine_id)
+            if not isinstance(actual, Mapping):
+                violations.append(
+                    f"provenance setup MINRUN machine 缺失：{machine_id}"
+                )
+                continue
+            for field in (
+                "setup_group",
+                "current_setup",
+                "completed_lots",
+                "count_known",
+            ):
+                if actual.get(field) != expected[field]:
+                    violations.append(
+                        f"provenance setup MINRUN {machine_id}.{field} "
+                        f"不一致：reported={actual.get(field)!r}, "
+                        f"trace={expected[field]!r}"
+                    )
+
+    expected_unknown_initial = sorted(
+        machine.machine_id
+        for machine in scenario.machines
+        if machine.setup_group is not None and machine.initial_setup
+        and machine.initial_setup_run_count is None
+    )
+    expected_unknown_final = sorted(
+        machine_id
+        for machine_id, machine_state in state.items()
+        if machine_state["setup_group"] is not None
+        and machine_state["current_setup"]
+        and not machine_state["count_known"]
+    )
+    if runtime.get("initial_setup_count_unknown") != expected_unknown_initial:
+        violations.append("provenance initial setup count unknown 不一致")
+    if runtime.get("initial_setup_count_unknown_final") != expected_unknown_final:
+        violations.append("provenance final setup count unknown 不一致")
+    return violations
+
+
 def audit_result_invariants(
     result: SimulationResult,
     scenario: Scenario,
@@ -874,5 +1177,6 @@ def audit_result_invariants(
     violations.extend(
         _audit_sampling_invariants(result, scenario, tolerance=tolerance)
     )
+    violations.extend(_audit_setup_minrun_invariants(result, scenario))
 
     return ResultInvariantAudit(tuple(violations))
