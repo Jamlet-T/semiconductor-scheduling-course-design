@@ -774,8 +774,6 @@ class Scenario:
             raise ValueError("PM pm_id 不能重复")
         calendar_pm_machines = [spec.machine_id for spec in self.calendar_pm_specs]
         wafer_pm_machines = [spec.machine_id for spec in self.wafer_pm_specs]
-        if len(calendar_pm_machines) != len(set(calendar_pm_machines)):
-            raise ValueError("每台 machine 最多一条 calendar PM spec")
         if len(wafer_pm_machines) != len(set(wafer_pm_machines)):
             raise ValueError("每台 machine 最多一条 wafer PM spec")
         unknown_pm_machines = set(calendar_pm_machines + wafer_pm_machines) - known_machines

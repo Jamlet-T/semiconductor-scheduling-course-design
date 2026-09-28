@@ -73,7 +73,7 @@ class SMT2020LoaderTests(unittest.TestCase):
                 raise AssertionError(f"loader 修改了原始数据：{model}")
 
     def test_public_contract_and_detected_models(self) -> None:
-        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.6")
+        self.assertEqual(SMT2020_LOADER_CONTRACT_VERSION, "0.1.7")
         self.assertEqual(set(self.loaded), set(MODELS))
         for model, loaded in self.loaded.items():
             self.assertEqual(loaded.dataset_manifest.model_name, model)
@@ -950,7 +950,7 @@ class SMT2020LoaderTests(unittest.TestCase):
             self.assertEqual(
                 (stochastic.scenario.dataset_provenance.loader_contract_version,
                  dict(stochastic.scenario.dataset_provenance.loader_config)["validation_sampling_operation"]),
-                ("0.1.6", f"{stochastic_selector[0]}:{stochastic_selector[1]}"),
+                ("0.1.7", f"{stochastic_selector[0]}:{stochastic_selector[1]}"),
             )
             result = simulate({"policy_id": "fifo"}, stochastic.scenario, 42)
             self.assertTrue(

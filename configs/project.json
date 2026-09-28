@@ -17,7 +17,7 @@
   ],
   "technical_route": {
     "status": "frozen",
-    "contract_version": "0.1.7",
+    "contract_version": "0.1.8",
     "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,
@@ -39,8 +39,8 @@
   },
   "smt2020_data_integration_gate": {
     "status": "not_passed_gaps",
-    "loader_contract_version": "0.1.6",
-    "loader_version": "0.1.6",
+    "loader_contract_version": "0.1.7",
+    "loader_version": "0.1.7",
     "validated_models": [
       "SMT2020_HVLM",
       "SMT2020_LVHM"
@@ -48,7 +48,7 @@
     "blocker_count_per_model": 4,
     "blocker_count_profile": "explicit_batch_decision_v1",
     "batch_decision_config": "configs/smt2020-batch-decision-v1.json",
-    "real_data_smoke": "fifo_processing_transport_release_batch_slices_and_sampling_decision_diagnostic",
+    "real_data_smoke": "fifo_processing_transport_release_batch_load_unload_multi_calendar_slices_and_sampling_decision_diagnostic",
     "next_gate": "smt2020_runtime_compatibility_gap_closure",
     "formal_experiments_allowed": false,
     "optimizer_training_allowed": false

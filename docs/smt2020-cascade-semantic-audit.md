@@ -10,7 +10,7 @@
 
 ## 当前受限 runtime 更新（不关闭 blocker）
 
-`Simulation Contract 0.1.7` 仅冻结 non-cascade、non-batch、非 `per_batch` 且无 Part/BatchInterval 的阶段子链；真实 loader slice 为最小可审计闭包，另外筛选无 Setup/sampling/rework/CQT/Dedication：
+当前 Simulation Contract `0.1.8` 沿用 `0.1.7` 引入的 non-cascade、non-batch、非 `per_batch` 且无 Part/BatchInterval 的阶段子链；真实 loader slice 为最小可审计闭包，另外筛选无 Setup/sampling/rework/CQT/Dedication：
 
 ```text
 LOAD_START → LOAD_FINISH

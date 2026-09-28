@@ -2,9 +2,9 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.7`；Data Contract `0.1.6`；Loader Contract `0.1.6`
+适用契约：Simulation Contract `0.1.8`；Data Contract `0.1.7`；Loader Contract `0.1.7`
 
-审计日期：2026-09-27
+审计日期：2026-09-28
 
 本文只回答“某项语义的依据来自哪里”。它不把微型场景运行时验证等同于正式 SMT2020 数据接入验证。
 
@@ -41,13 +41,13 @@
 | LOAD/PROCESS_CORE/UNLOAD | `LTIME/ULTIME`、`STNCAP`、`MachineSpec` | A/B/E | 阶段 runtime 仅限 non-cascade、non-batch；真实 loader slice 另外筛选无 Setup/sampling/rework/CQT/Dedication/interval：LOAD 与 UNLOAD 独立占用，core `PROCESS_START` 关闭 CQT，卸载后 `PROCESS_FINISH` 为 canonical completion；Failure/PM 按剩余时长恢复 | 合成 runtime（含 CQT+正 L/U）与真实 `r_3:18→19` 两模型 slice 已形成受限证据；其他合格机、日历和初始历史省略，cascade 仍 blocker |
 | 初始 Dedication | 无历史 machine | F | 不猜测绑定；记录 unknown/audit 状态 | 无法恢复真实历史绑定 |
 | 初始 CQT clock | 无 source finish 历史时间 | F | 初始 WIP 不伪造已开启时钟 | 无法恢复真实历史起点 |
-| Failure/SDT 配置 | down calendar、attach、FOA、distribution | A/B | loader 应生成 machine-level failure configuration | exponential 已接入统一 sampler；multi-calendar runtime 仍为 blocker |
+| Failure/SDT 配置 | down calendar、attach、FOA、distribution | A/B | loader 应生成 machine-level failure configuration | exponential 已接入统一 sampler；Calendar PM 诊断 slice 明确省略 Failure，完整 Failure×Calendar PM runtime 仍为 blocker |
 | Failure preemptive-resume | 无充分原始业务说明 | D/E | 暂停同一 machine 上同一活动并恢复剩余时长 | 本项目显式语义，不表述为数据集规定 |
-| PM calendar | `PMCAL`、attach、FOA | A/B | calendar PM 生成明确 PM occurrence | calendar/pieces/FOA 已映射；multi-calendar runtime blocker |
-| Wafer PM | FOA/wafer trigger 相关记录 | A/B/E | 真实完成 wafer 才累计；达到阈值后下次 dispatch 前 PM | 字段存在，触发细节含本地规则 |
+| PM calendar | `PMCAL`、attach、FOA | A/B | 同一物理机的每条 calendar 均生成独立 `CalendarPMSpec`；runtime identity 为 `<PMCALNAME>@<machine_id>`，FOA/interval/duration 保留原始来源和转换值 | `Litho_BE_110` 三条 Calendar PM 的真实 selector/source-row/provenance 已形成受限诊断 slice；只证明 Calendar PM 子链，不证明 full-fab 组合 |
+| Wafer PM | FOA/wafer trigger 相关记录 | A/B/E | 真实完成 wafer 才累计；达到阈值后下次 dispatch 前 PM | 全量仍有 `213` 条 wafer-PM attachment rows；multi-Wafer PM 与 Failure/Calendar PM 联动未由 Calendar PM 子链关闭，仍为 blocker |
 | Wafer PM reset | 无明确长期业务说明 | E | PM 完成后 `reset_zero` | 本项目显式规则，不表述为原始数据规定 |
 | 初始 wafer PM counter | 无设备历史计数 | F/E | 默认值必须由 scenario 显式给出并写入 provenance | 无法恢复真实历史计数 |
-| Failure/PM overlap ownership | 无充分原始业务说明 | E | 单一 downtime owner；重叠 occurrence 按 Contract 抑制/失效 | 本项目显式规则 |
+| Failure/PM overlap ownership | 无充分原始业务说明 | E | 单一 downtime owner；重叠 occurrence 按 Contract 抑制/失效 | 合成 runtime 规则已冻结；真实 Calendar PM slice 省略 Failure/Wafer PM，不宣称真实组合集成通过 |
 | PM 抑制 stochastic failure 后重新起算 | 无充分原始业务说明 | E | PM 结束后按实体索引流重新安排下一 occurrence | 本项目显式规则 |
 | Transport | route location 与 `fromto` | A/B/D/E | 当前主线使用外生延迟，不占运输资源；仅已配置 `Fab→Fab` 使用 `uniform(7.5,2.5)`，其余 pair 为零并显式审计 | runtime、CRN、CQT、fixed horizon 与真实 configured/missing-pair slice 已验证；L/U slice 仅使用 Fab→Fab |
 | Sampling | `StepPercent` | A/B/C/D/E | `None` 始终执行；显式 100% 不抽随机；`0<p<100` 在 operation entry 以稳定流判断，失败写 skip trace | runtime/initial-WIP 诊断已验证；sampled CQT targets 4/18 全为 p100，stochastic endpoint=0，sampling blocker 已关闭；load/unload 另列 blocker |
@@ -67,7 +67,7 @@
 
 ## 5. Loader 实测更新
 
-Loader Contract `0.1.6` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
+Loader Contract `0.1.7` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持；其中 multi-calendar 只代表诊断 slice，不代表真实 full-fab 集成测试通过：
 
 - Product/Route/Operation、STNFAM→具体 machine、Setup transition/group、Batch wafer bounds、CQT、Dedication、Failure/PM calendar/attach、Transport、ReleaseTemplate 和 Initial WIP 已进入 `SMT2020StaticModel`；
 - raw route row 与 parsed operation 逐行 reconciliation，跨文件引用没有 ERROR；
@@ -80,6 +80,16 @@ Loader Contract `0.1.6` 已在真实 HVLM/LVHM 上完成静态映射与受限 ru
 - raw sampled CQT target 为 HVLM 4、LVHM 18，逐条均为 p100，stochastic endpoint 为 0；p100 不存在 skip 分支，sampling blocker 关闭；未来 p<100 endpoint 仍显式 unsupported；
 - batch v1 config 显式绑定两模型 manifest，并将 E 级 `raw BATCHMX/60 min` 与 canonical hash 写入 provenance；HVLM target、LVHM timeout 两条真实 initial-WIP slice 通过 per-batch CRN 和结果不变量审计，load/unload/calendar 省略仍有 warning；
 - non-cascade、non-batch 的真实 L/U slice 固定为两模型 `r_3:18→19`、指定 initial WIP 和每道首台合格物理机，保留 1 min LOAD/UNLOAD 与 Fab→Fab transport；其他合格机、Failure/PM attachment 和初始历史显式写入 provenance 并省略；
+- multi-calendar 诊断 slice 固定为 HVLM `part_3/r_3/491/Init_Lot_3_134`（route row 492、WIP row 140，QT/MN overlap）和 LVHM `part_2/r_2/459/Init_Lot_2_22`（route row 460、WIP row 508，WK/QT overlap），均选 `Litho_BE_110#0001`；两模型各保留 `Litho_BE_110_WK/MN/QT`，复合 `pm_id`、FOA、interval、duration、`pmcal.txt:36–38`、`attach.txt:47–49` 与 `tool.txt.1l:60` machine source row 均进入 provenance；
+- multi-calendar slice 明确为单机/单工序/单 WIP Calendar PM 子链：省略 `BREAK_Litho` Failure、其他资格机、后续 route/rework 和初始 setup/CQT/dedication/wafer-PM counter。它不加载 Wafer PM，也不将全量 `213` 条 wafer-PM attachment rows 或 HVLM/LVHM `351/307` 台多 Calendar PM 物理机 blocker 误报为已解决；
 - static mapping 不等于完整 runtime closure。受限 L/U 子链通过不等于 cascade 语义关闭；显式 v1 batch 配置下 rework、load/unload/cascade、setup MINRUN 与 multi-calendar 仍构成 Data Integration 的 4 类 blocker；无配置默认 audit 另有 batch 参数 blocker。
+
+### Calendar PM 诊断 slice 的证据边界
+
+三条 raw Calendar PM 均为 `PMCALTYPE=mtbpm_by_cal`，并通过 `stnfam/Litho_BE_110` attachment 连接到同一台 `Litho_BE_110#0001`。runtime 使用复合 identity `Litho_BE_110_{WK|MN|QT}@Litho_BE_110#0001`；raw source rows 为 `pmcal.txt:36/37/38` 与 `attach.txt:47/48/49`。HVLM 的 FOA 为 `6.9/29.4/89.2 day`，LVHM 为 `7/30/91 day`；三条 interval 均为 `7/30/91 day`，duration 均为 `uniform(6.65/13.29/26.59 hr, 1.33/2.66/5.32 hr)`。这些值转换为分钟后写入 `calendar_mapping`，而不是另造固定时刻 occurrence。
+
+诊断 selector、source-row、复合 `pm_id`、FOA/interval/duration、overlap/horizon、omitted IDs 与 manifest/raw hashes 均写入 `DatasetProvenanceSpec.loader_config`。warning 代码为 `DI_MULTI_CALENDAR_SLICE_OMITS_FAILURE`、`DI_MULTI_CALENDAR_SLICE_OMITS_OTHER_MACHINES`、`DI_MULTI_CALENDAR_SLICE_OMITS_ROUTE_HISTORY`、`DI_MULTI_CALENDAR_SLICE_INITIAL_HISTORY_UNKNOWN` 和 `DI_MULTI_CALENDAR_SLICE_NOT_FULL_FAB`；此外全量 `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` 仍为 BLOCKER，Gate 仍是 `not_passed_gaps`。因此这里的 A/B 证据支持 raw 映射，E/F 支持省略与不可恢复历史边界，但不能升级为“SMT2020 full-fab 已集成”。
+
+受限运行验收记录为 `test_smt2020_multi_calendar_validation.py: 7 passed`，full regression `282 passed`；验收覆盖两模型 raw→Scenario→`simulate()`、真实 overlap 时钟、audit/CRN/provenance。该结果是诊断 slice 的运行证据，不是 full-fab 集成、正式 KPI 或 HVLM/LVHM 策略实验结果。
 
 完整判定见 `smt2020-data-integration-gate.md`。

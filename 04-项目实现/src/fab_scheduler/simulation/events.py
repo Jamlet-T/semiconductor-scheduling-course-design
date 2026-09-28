@@ -8,7 +8,7 @@ from typing import Any
 
 
 class EventPriority(IntEnum):
-    """Simulation Contract 0.1.7 的同刻事件优先级（排序数值未变）。"""
+    """Simulation Contract 0.1.8 的同刻事件优先级（排序数值未变）。"""
 
     PROCESS_FINISH = 10
     REPAIR_FINISH = 20

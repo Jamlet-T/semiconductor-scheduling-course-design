@@ -1,6 +1,6 @@
 # SMT2020 Setup MINRUN 语义审计
 
-状态：**原始配置已核对；Simulation Contract `0.1.6` 的本地合成场景运行时已实现并回归；`DI_UNSUPPORTED_SETUP_MINRUN` 暂不关闭。**
+状态：**原始配置已核对；本地合成场景运行时于 Simulation Contract `0.1.6` 引入并回归，当前 Contract 为 `0.1.8`；`DI_UNSUPPORTED_SETUP_MINRUN` 暂不关闭。**
 
 ## 原始字段链
 

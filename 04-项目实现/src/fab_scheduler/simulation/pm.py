@@ -13,7 +13,7 @@ from fab_scheduler.simulation.random_streams import EntityRandomStreams
 from fab_scheduler.simulation.distributions import sample_distribution
 
 
-PM_RUNTIME_SCHEMA_VERSION = "0.1.0"
+PM_RUNTIME_SCHEMA_VERSION = "0.1.1"
 PM_INTERVAL_STREAM = "pm_interval"
 PM_DURATION_STREAM = "pm_duration"
 
@@ -71,34 +71,58 @@ class PMRuntime:
         wafer_specs: tuple[WaferPMSpec, ...],
         streams: EntityRandomStreams,
     ) -> None:
-        self._calendar = {spec.machine_id: spec for spec in calendar_specs}
-        self._wafer = {
-            spec.machine_id: _WaferState(spec, spec.initial_counter_wafers)
-            for spec in wafer_specs
-        }
+        seen_pm_ids: set[str] = set()
+        self._calendar: dict[str, CalendarPMSpec] = {}
+        for spec in calendar_specs:
+            if spec.pm_id in seen_pm_ids:
+                raise ValueError("PM pm_id 不能重复")
+            seen_pm_ids.add(spec.pm_id)
+            self._calendar[spec.pm_id] = spec
+
+        seen_wafer_machines: set[str] = set()
+        self._wafer: dict[str, _WaferState] = {}
+        for spec in wafer_specs:
+            if spec.pm_id in seen_pm_ids:
+                raise ValueError("PM pm_id 不能重复")
+            if spec.machine_id in seen_wafer_machines:
+                raise ValueError("每台 machine 最多一条 wafer PM spec")
+            seen_pm_ids.add(spec.pm_id)
+            seen_wafer_machines.add(spec.machine_id)
+            self._wafer[spec.machine_id] = _WaferState(
+                spec, spec.initial_counter_wafers
+            )
         self._streams = streams
 
     def initial_calendar_occurrences(self) -> tuple[PMOccurrence, ...]:
         result: list[PMOccurrence] = []
-        for machine_id in sorted(self._calendar):
-            spec = self._calendar[machine_id]
+        for pm_id in sorted(self._calendar):
+            spec = self._calendar[pm_id]
             if spec.model_type == "scripted":
                 for index, item in enumerate(spec.scripted_occurrences):
-                    result.append(PMOccurrence(spec.pm_id, machine_id, index, item.start_time, item.duration, "CALENDAR_PM", "scripted"))
+                    result.append(PMOccurrence(spec.pm_id, spec.machine_id, index, item.start_time, item.duration, "CALENDAR_PM", "scripted"))
             else:
                 assert spec.first_start_time is not None and spec.duration is not None
-                result.append(PMOccurrence(spec.pm_id, machine_id, 0, spec.first_start_time, self._sample(spec.duration, PM_DURATION_STREAM, spec.pm_id, 0), "CALENDAR_PM", "periodic"))
+                result.append(PMOccurrence(spec.pm_id, spec.machine_id, 0, spec.first_start_time, self._sample(spec.duration, PM_DURATION_STREAM, spec.pm_id, 0), "CALENDAR_PM", "periodic"))
         return tuple(sorted(result, key=lambda item: (item.start_time, item.machine_id, item.pm_id, item.occurrence_index)))
 
     def next_calendar_occurrence(self, occurrence: PMOccurrence) -> PMOccurrence | None:
-        spec = self._calendar[occurrence.machine_id]
+        try:
+            spec = self._calendar[occurrence.pm_id]
+        except KeyError as exc:
+            raise ValueError(f"未知 calendar PM pm_id：{occurrence.pm_id}") from exc
+        if occurrence.machine_id != spec.machine_id:
+            raise ValueError(
+                f"calendar PM occurrence machine_id 与 pm_id 不一致：{occurrence.pm_id}"
+            )
         if spec.model_type != "periodic":
             return None
         assert spec.interval is not None and spec.duration is not None
         index = occurrence.occurrence_index + 1
         interval = self._sample(spec.interval, PM_INTERVAL_STREAM, spec.pm_id, index)
         duration = self._sample(spec.duration, PM_DURATION_STREAM, spec.pm_id, index)
-        return PMOccurrence(spec.pm_id, occurrence.machine_id, index, occurrence.start_time + interval, duration, "CALENDAR_PM", "periodic")
+        # 使用 occurrence 的计划开始时刻续期；即使当前 occurrence 已 stale，
+        # 下一次也不能从实际处理/恢复时刻重新起算而发生漂移。
+        return PMOccurrence(spec.pm_id, spec.machine_id, index, occurrence.start_time + interval, duration, "CALENDAR_PM", "periodic")
 
     def account_completed_wafers(self, machine_id: str, wafers: int) -> WaferPMDue | None:
         state = self._wafer.get(machine_id)

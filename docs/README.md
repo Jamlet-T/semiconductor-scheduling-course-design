@@ -20,8 +20,8 @@
 - [SMT2020 Rework Semantic Audit](smt2020-rework-semantic-audit.md)：返工 raw 关系、论文/固定参考的证据分层、sampling/dedication/initial-WIP 组合与仍保持的 rework blocker。
 - [SMT2020 Load / Unload / Cascade Semantic Audit](smt2020-cascade-semantic-audit.md)：级联双时点、真实 1+1 分钟装卸、参考实现尾段行为与分阶段验收边界。
 - [SMT2020 Non-cascade Load / Unload Runtime Audit](smt2020-load-unload-runtime-audit.md)：独立装卸阶段、真实两工序受限切片、审计证据及未关闭的级联边界。
-- [SMT2020 Multi-calendar Attachment Audit](smt2020-multi-calendar-attachment-audit.md)：303 条附件行到生产物理机的静态展开、受影响机台计数与尚未冻结的同机冲突语义。
+- [SMT2020 Multi-calendar Attachment Audit](smt2020-multi-calendar-attachment-audit.md)：303 条附件行到生产物理机的静态展开、Calendar PM 子链诊断 slice，以及仍未关闭的同机多 calendar/full-fab blocker。
 - [SMT2020 Setup MINRUN Audit](smt2020-setup-minrun-audit.md)：Implant_Gas 原始字段链、参考实现差异、初始历史缺失及运行时关闭条件。
 - [SMT2020 Data Integration Gate](smt2020-data-integration-gate.md)：真实数据 reconciliation、validation smoke 与 DI-E01～DI-E15 判定。
 
-M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。processing distribution/PTPER、exponential failure、transport、受限 release、真实 sampling profile、显式配置下的真实 batch 决策及 non-cascade load/unload 两工序切片均已形成各自受限证据链。MINRUN 已有合成场景硬约束运行时，真实组合 blocker 未关闭。显式 v1 batch 配置下 Data Integration Gate 仍有 4 类 blocker、状态为 `not_passed_gaps`；默认无配置 audit 有 5 类。没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。当前契约为 Simulation `0.1.7`、Policy `0.1.1`、Loader `0.1.6`、Data `0.1.6`。
+M1 Closure Audit 已重新执行：MC01～MC08 与原始 E01～E10 全部 PASS，M1 状态为 `passed`。processing distribution/PTPER、exponential failure、transport、受限 release、真实 sampling profile、显式配置下的真实 batch 决策、non-cascade load/unload 两工序切片及 Calendar PM 单机单工序诊断 slice 均已形成各自受限证据链；其中 multi-calendar 受限回归为 `7 passed`，full regression 为 `282 passed`。Calendar PM slice 不加载 Failure/Wafer PM、其他机器、后续 route/rework 或初始历史，不代表 full-fab 集成测试通过。MINRUN、rework、load/unload/cascade 与多 calendar/full-fab 组合 blocker 未关闭。显式 v1 batch 配置下 Data Integration Gate 仍有 4 类 blocker、状态为 `not_passed_gaps`；默认无配置 audit 有 5 类。没有 HVLM/LVHM 正式实验结果，CMA-ES 继续禁用。当前契约为 Simulation `0.1.8`、Policy `0.1.1`、Loader `0.1.7`、Data `0.1.7`。

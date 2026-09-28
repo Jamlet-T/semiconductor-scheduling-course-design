@@ -16,6 +16,7 @@ from typing import Any, Literal, Mapping
 from fab_scheduler.data.manifest import DatasetManifest, build_dataset_manifest
 from fab_scheduler.domain.models import (
     BatchSpec,
+    CalendarPMSpec,
     DatasetProvenanceSpec,
     LotSpec,
     MachineSpec,
@@ -27,8 +28,8 @@ from fab_scheduler.domain.models import (
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.6"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.6"
+SMT2020_LOADER_VERSION = "0.1.7"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.7"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -197,6 +198,7 @@ class MachineTemplateDefinition:
     load_minutes: float
     unload_minutes: float
     cascading: bool
+    source_row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +223,7 @@ class OperationDefinition:
     cqt_target_step_id: int | None
     cqt_limit_minutes: float | None
     dedication_target_step_id: int | None
+    source_row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +322,7 @@ class CalendarDefinition:
     interval: DistributionDefinition | None
     wafer_threshold: int | None
     duration: DistributionDefinition
+    source_row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +333,7 @@ class CalendarAttachmentDefinition:
     resource_name: str
     first_occurrence: DistributionDefinition | None
     first_occurrence_wafers: int | None
+    source_row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +357,7 @@ class LoaderConfig:
         "audit", "validation_slice", "transport_validation_slice",
         "release_validation_slice", "sampling_validation_slice",
         "batch_validation_slice", "load_unload_validation_slice",
+        "multi_calendar_validation_slice",
     ] = "audit"
     validation_product_id: str | None = None
     validation_transport_pair: tuple[str, str] | None = None
@@ -365,6 +371,7 @@ class LoaderConfig:
             "audit", "validation_slice", "transport_validation_slice",
             "release_validation_slice", "sampling_validation_slice",
             "batch_validation_slice", "load_unload_validation_slice",
+            "multi_calendar_validation_slice",
         }:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
         if self.mode == "audit" and (
@@ -631,7 +638,7 @@ def load_smt2020(
     machine_templates: list[MachineTemplateDefinition] = []
     family_machines: dict[str, list[str]] = {}
     group_machines: dict[str, list[str]] = {}
-    for row in tool_rows:
+    for source_row, row in enumerate(tool_rows, start=2):
         quantity = _int(row["STNQTY"])
         if quantity <= 0:
             note("ERROR", "DI_INVALID_MACHINE_QUANTITY", "STNQTY 必须为正", station=row["STN"])
@@ -644,6 +651,7 @@ def load_smt2020(
             machine_ids,
             row["BATCHCRITF"] or None, row["BATCHPER"] or None, row["SETUPGRP"] or None,
             _minutes(row["LTIME"], row["LTUNITS"]), _minutes(row["ULTIME"], row["ULTUNITS"]), row["STNCAP"] == "2.0",
+            source_row=source_row,
         ))
 
     routes: list[RouteDefinition] = []
@@ -654,7 +662,7 @@ def load_smt2020(
         raw_operation_count += len(rows)
         operations: list[OperationDefinition] = []
         observed_steps: list[int] = []
-        for row in rows:
+        for source_row, row in enumerate(rows, start=2):
             step = _int(row["STEP"])
             observed_steps.append(step)
             eligible = tuple(family_machines.get(row["STNFAM"], ()))
@@ -742,6 +750,7 @@ def load_smt2020(
                 _int(row["STEP_CQT"]) if row["STEP_CQT"] else None,
                 _minutes(row["CQT"], row["CQTUNITS"]) if row["CQT"] else None,
                 _int(row["FORSTEP"]) if row["SVESTN"].lower() == "yes" else None,
+                source_row=source_row,
             )
             if op.batch_min_wafers is not None and (op.batch_max_wafers is None or op.batch_min_wafers > op.batch_max_wafers or op.processing_basis != "per_batch"):
                 note("ERROR", "DI_INVALID_BATCH_RANGE", "Batch capacity/PTPER 不一致", route=product.route_id, step=step)
@@ -853,21 +862,31 @@ def load_smt2020(
         unknown_dedication += sum(op.step_id < current <= (op.dedication_target_step_id or -1) for op in route.operations)
 
     transport = tuple(TransportDefinition(row["FROMLOC"], row["TOLOC"], parse_distribution(row["DDIST"], row["DTIME"], row["DTIME2"], row["DUNITS"])) for row in transport_rows)
-    down_calendars = tuple(CalendarDefinition(row["DOWNCALNAME"], row["DOWNCALTYPE"], parse_distribution(row["MTTFDIST"], row["MTTF"], "", row["MTTFUNITS"]), None, parse_distribution(row["MTTRDIST"], row["MTTR"], "", row["MTTRUNITS"])) for row in down_rows)
+    down_calendars = tuple(
+        CalendarDefinition(
+            row["DOWNCALNAME"], row["DOWNCALTYPE"],
+            parse_distribution(row["MTTFDIST"], row["MTTF"], "", row["MTTFUNITS"]),
+            None,
+            parse_distribution(row["MTTRDIST"], row["MTTR"], "", row["MTTRUNITS"]),
+            source_row=source_row,
+        )
+        for source_row, row in enumerate(down_rows, start=2)
+    )
     pm_calendars = tuple(
         CalendarDefinition(
             row["PMCALNAME"], row["PMCALTYPE"],
             None if row["MTBPMUNITS"] == "pieces" else parse_distribution("constant", row["MTBPM"], "", row["MTBPMUNITS"]),
             _int(row["MTBPM"]) if row["MTBPMUNITS"] == "pieces" else None,
             parse_distribution(row["MTTRDIST"], row["MTTR"], row["MTTR2"], row["MTTRUNITS"]),
+            source_row=source_row,
         )
-        for row in pm_rows
+        for source_row, row in enumerate(pm_rows, start=2)
     )
     calendar_ids = {item.calendar_id for item in down_calendars + pm_calendars}
     down_calendar_ids = {item.calendar_id for item in down_calendars}
     pm_calendar_by_id = {item.calendar_id: item for item in pm_calendars}
     attachments: list[CalendarAttachmentDefinition] = []
-    for row in attach_rows:
+    for source_row, row in enumerate(attach_rows, start=2):
         if row["CALNAME"] not in calendar_ids:
             note("ERROR", "DI_UNKNOWN_CALENDAR", "attach 引用未知 calendar", calendar=row["CALNAME"])
         if row["CALTYPE"] not in {"down", "pm"}:
@@ -892,7 +911,10 @@ def load_smt2020(
         else:
             first = None
             first_wafers = _int(row["FOA"])
-        attachments.append(CalendarAttachmentDefinition(row["CALNAME"], row["CALTYPE"], row["RESTYPE"], row["RESNAME"], first, first_wafers))
+        attachments.append(CalendarAttachmentDefinition(
+            row["CALNAME"], row["CALTYPE"], row["RESTYPE"], row["RESNAME"],
+            first, first_wafers, source_row=source_row,
+        ))
 
     # Static attachment expansion only: this does not construct a runtime Scenario.
     # Keep one record per production physical machine so the audit distinguishes
@@ -1340,7 +1362,7 @@ def load_smt2020(
     note(
         "BLOCKER",
         "DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
-        "同一物理机附着多条 Failure/PM calendar，而当前 Scenario 每类每机最多一条；attachments 是 raw 行数，物理机展开计数见 statistics",
+        "raw attachment 显示同一物理机的多条 Failure/PM 组合；多 Wafer PM、Failure 与多 Calendar PM 的完整联动仍未闭环，受限 slice 不关闭该 blocker",
         attachments=len(attachments),
         raw_attachment_rows=len(attachments),
         physical_machines_with_attachments=machines_with_attachments,
@@ -1498,6 +1520,8 @@ def load_smt2020(
         scenario = _build_batch_validation_slice(static_model, manifest, config)
     elif config.mode == "load_unload_validation_slice":
         scenario = _build_load_unload_validation_slice(static_model, manifest, config)
+    elif config.mode == "multi_calendar_validation_slice":
+        scenario = _build_multi_calendar_validation_slice(static_model, manifest, config)
     else:
         scenario = None
     if config.mode == "batch_validation_slice" and scenario is not None:
@@ -1582,6 +1606,69 @@ def load_smt2020(
             "slice 仅接受 per_lot、无 setup/batch/sampling/rework/CQT/dedication 的 non-cascade 两工序 profile",
             profile=slice_items.get("load_unload_slice_profile_constraints", ""),
         )
+    if config.mode == "multi_calendar_validation_slice" and scenario is not None:
+        slice_items = dict(scenario.dataset_provenance.loader_config)
+        note(
+            "WARNING",
+            "DI_MULTI_CALENDAR_SLICE_OMITS_FAILURE",
+            "multi-calendar validation slice 不装配所选物理机的 Failure calendar；仅验证多 Calendar PM 调度",
+            machine_id=slice_items.get("multi_calendar_slice_machine_id", ""),
+            omitted_failure_calendars=slice_items.get(
+                "multi_calendar_slice_omitted_failure_calendar_ids", ""
+            ),
+            omitted_calendar_pm=slice_items.get(
+                "multi_calendar_slice_omitted_calendar_pm_ids", ""
+            ),
+            omitted_wafer_pm=slice_items.get(
+                "multi_calendar_slice_omitted_wafer_pm_ids", ""
+            ),
+        )
+        note(
+            "WARNING",
+            "DI_MULTI_CALENDAR_SLICE_OMITS_OTHER_MACHINES",
+            "multi-calendar validation slice 只选取一台真实合格物理机；其他资格机和资源竞争不进入 Scenario",
+            machine_id=slice_items.get("multi_calendar_slice_machine_id", ""),
+            omitted_machine_ids=slice_items.get(
+                "multi_calendar_slice_omitted_machine_ids", ""
+            ),
+        )
+        note(
+            "WARNING",
+            "DI_MULTI_CALENDAR_SLICE_OMITS_ROUTE_HISTORY",
+            "multi-calendar validation slice 只保留当前一道工序；后续 route/rework 不进入 Scenario",
+            omitted_route_steps=slice_items.get(
+                "multi_calendar_slice_omitted_route_steps", ""
+            ),
+            omitted_future_route_steps=slice_items.get(
+                "multi_calendar_slice_omitted_future_route_steps", ""
+            ),
+            omitted_rework_links=slice_items.get(
+                "multi_calendar_slice_omitted_rework_links", ""
+            ),
+        )
+        note(
+            "WARNING",
+            "DI_MULTI_CALENDAR_SLICE_INITIAL_HISTORY_UNKNOWN",
+            "multi-calendar validation slice 不伪造初始 setup、CQT/dedication 历史或 wafer-PM counter",
+            initial_setup=slice_items.get(
+                "multi_calendar_slice_initial_setup", "unknown"
+            ),
+            initial_cqt=slice_items.get(
+                "multi_calendar_slice_initial_cqt_history", "unknown"
+            ),
+            initial_dedication=slice_items.get(
+                "multi_calendar_slice_initial_dedication_history", "unknown"
+            ),
+            initial_wafer_pm_counter=slice_items.get(
+                "multi_calendar_slice_initial_wafer_pm_counter", "unknown"
+            ),
+        )
+        note(
+            "WARNING",
+            "DI_MULTI_CALENDAR_SLICE_NOT_FULL_FAB",
+            "multi-calendar validation slice 是受限诊断，不代表 full-fab，也不关闭 Data Integration Gate blocker",
+            calendar_ids=slice_items.get("multi_calendar_slice_calendar_ids", ""),
+        )
     evidence = (
         SemanticEvidence("entity-fields", "A", "raw SMT2020 tables", "字段和值直接读取"),
         SemanticEvidence("qualification", "B", "route.STNFAM + tool.STNFAM/STNQTY", "推导具体物理机资格集合"),
@@ -1615,6 +1702,12 @@ def load_smt2020(
             "A/B/D/E",
             "real initial WIP + route_3 + tool.txt.1l + fromto.txt + local contract",
             "仅保留 r_3:18→19、指定真实 WIP 和各自首台合格机；保留真实 1 min LOAD/UNLOAD 与 Fab→Fab 外生 transport，其余资格机、Failure/PM 和历史状态显式省略并进入 provenance",
+        ),
+        SemanticEvidence(
+            "multi-calendar-validation-runtime",
+            "A/B/D/E",
+            "pmcal.txt + attach.txt + real initial WIP + tool.txt.1l + local contract",
+            "逐条保留同一真实物理机的 WK/MN/QT Calendar PM interval、duration 与 FOA；runtime pm_id 由 raw calendar ID 和 physical machine ID 组成，其他设备、Failure、后续 route/rework 与初始历史显式省略",
         ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
@@ -2152,6 +2245,515 @@ def _build_load_unload_validation_slice(
         termination_mode="fixed_horizon",
         horizon=horizon,
         transport_specs=transport_specs,
+        dataset_provenance=provenance,
+    )
+
+
+def _build_multi_calendar_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """构造同一真实物理机上多条 Calendar PM 的最小诊断 slice。
+
+    该 slice 只为验证 raw ``pmcal.txt``/``attach.txt`` 到 runtime
+    ``CalendarPMSpec`` 的一对一映射：它保留指定 initial WIP 的当前一道
+    ``per_piece`` 工序、``Litho_BE_110#0001`` 及其 raw 三条 WK/MN/QT
+    calendar。Failure、其它资格机、剩余 route/rework 和初始历史都明确不
+    进入 Scenario；因此它不是 full-fab 场景，也不改变 Data Integration
+    Gate 的判断。
+    """
+
+    target_by_model = {
+        "SMT2020_HVLM": {
+            "lot_id": "Init_Lot_3_134",
+            "product_id": "part_3",
+            "route_id": "r_3",
+            "step_id": 491,
+            "overlap_pair": ("QT", "MN"),
+        },
+        "SMT2020_LVHM": {
+            "lot_id": "Init_Lot_2_22",
+            "product_id": "part_2",
+            "route_id": "r_2",
+            "step_id": 459,
+            "overlap_pair": ("WK", "QT"),
+        },
+    }
+    target = target_by_model.get(manifest.model_name)
+    if target is None:
+        raise ValueError(
+            "multi_calendar_validation_slice 仅支持 SMT2020_HVLM/SMT2020_LVHM"
+        )
+
+    family_id = "Litho_BE_110"
+    expected_calendar_ids = tuple(
+        f"{family_id}_{suffix}" for suffix in ("WK", "MN", "QT")
+    )
+    family_templates = tuple(
+        item
+        for item in model.machine_templates
+        if item.tool_family_id == family_id
+    )
+    if len(family_templates) != 1:
+        raise ValueError(
+            "真实静态模型中的 Litho_BE_110 tool template 数量不是 1："
+            f"{len(family_templates)}"
+        )
+    template = family_templates[0]
+    if template.location_id != "Fab" or template.cascading:
+        raise ValueError(
+            "真实 Litho_BE_110 不是 Fab non-cascade："
+            f"location={template.location_id}, cascading={template.cascading}"
+        )
+    if (template.load_minutes, template.unload_minutes) != (1.0, 1.0):
+        raise ValueError(
+            "真实 Litho_BE_110 LOAD/UNLOAD 不是 1/1 min："
+            f"{template.load_minutes}/{template.unload_minutes}"
+        )
+    selected_machine_id = f"{family_id}#0001"
+    if selected_machine_id not in template.resource_instance_ids:
+        raise ValueError(
+            "真实 Litho_BE_110 缺少优先选择的 physical machine："
+            f"{selected_machine_id}"
+        )
+
+    product = next(
+        (
+            item
+            for item in model.products
+            if item.product_id == target["product_id"]
+            and item.route_id == target["route_id"]
+        ),
+        None,
+    )
+    if product is None:
+        raise ValueError(
+            "multi-calendar slice 找不到指定真实 product/route："
+            f"{target['product_id']}/{target['route_id']}"
+        )
+    route = next(
+        (item for item in model.routes if item.route_id == target["route_id"]),
+        None,
+    )
+    if route is None:
+        raise ValueError(f"找不到真实 route：{target['route_id']}")
+    operation = next(
+        (item for item in route.operations if item.step_id == target["step_id"]),
+        None,
+    )
+    if operation is None:
+        raise ValueError(
+            "真实 route 缺少指定 current operation："
+            f"{target['route_id']}:{target['step_id']}"
+        )
+    if operation.tool_family_id != family_id:
+        raise ValueError(
+            "指定 current operation 的 raw tool family 不匹配："
+            f"{operation.tool_family_id}"
+        )
+    if selected_machine_id not in operation.eligible_machine_ids:
+        raise ValueError(
+            "指定 physical machine 不在 current operation 的 raw qualification 中"
+        )
+    unsupported_profile_fields = {
+        "processing_basis": operation.processing_basis,
+        "sample_percent": operation.sample_percent,
+        "required_setup": operation.required_setup,
+        "setup_override_minutes": operation.setup_override_minutes,
+        "batch_min_wafers": operation.batch_min_wafers,
+        "batch_max_wafers": operation.batch_max_wafers,
+        "batch_interval_minutes": operation.batch_interval_minutes,
+        "part_interval_minutes": operation.part_interval_minutes,
+        "rework_step_id": operation.rework_step_id,
+        "cqt_target_step_id": operation.cqt_target_step_id,
+        "dedication_target_step_id": operation.dedication_target_step_id,
+    }
+    if (
+        operation.processing_basis != "per_piece"
+        or any(
+            value is not None
+            for key, value in unsupported_profile_fields.items()
+            if key != "processing_basis"
+        )
+    ):
+        raise ValueError(
+            "指定 current operation 不满足无 sampling/setup/batch/interval 的"
+            f" per_piece profile：{unsupported_profile_fields}"
+        )
+
+    matching_wip = tuple(
+        item
+        for item in model.initial_wip
+        if item.lot_id == target["lot_id"]
+        and item.product_id == target["product_id"]
+        and item.current_step_id == target["step_id"]
+    )
+    if len(matching_wip) != 1:
+        raise ValueError(
+            "找不到唯一的指定真实 initial WIP："
+            f"{target['lot_id']}（要求 {target['product_id']}/"
+            f"{target['step_id']}）"
+        )
+    wip = matching_wip[0]
+
+    pm_by_id = {item.calendar_id: item for item in model.pm_calendars}
+    if len(pm_by_id) != len(model.pm_calendars):
+        raise ValueError("raw pmcal.txt 的 PMCALNAME 不唯一，拒绝猜测映射")
+    attach_by_calendar: dict[str, tuple[CalendarAttachmentDefinition, ...]] = {}
+    for item in model.calendar_attachments:
+        attach_by_calendar.setdefault(item.calendar_id, ())
+        attach_by_calendar[item.calendar_id] += (item,)
+
+    calendar_specs: list[CalendarPMSpec] = []
+    selected_attachments: list[CalendarAttachmentDefinition] = []
+    for calendar_id in expected_calendar_ids:
+        calendar = pm_by_id.get(calendar_id)
+        if calendar is None:
+            raise ValueError(f"raw pmcal.txt 缺少指定 calendar：{calendar_id}")
+        if calendar.calendar_type.lower() != "mtbpm_by_cal":
+            raise ValueError(
+                f"{calendar_id} 的 raw PMCALTYPE 不是 mtbpm_by_cal："
+                f"{calendar.calendar_type}"
+            )
+        if calendar.interval is None or calendar.wafer_threshold is not None:
+            raise ValueError(
+                f"{calendar_id} 不是 calendar-interval PM，拒绝降级为其它语义"
+            )
+        if calendar.duration.kind not in {"constant", "uniform"}:
+            raise ValueError(
+                f"{calendar_id} 的 raw duration 无固定上下界，"
+                "不能验证受限 slice 的 overlap/horizon"
+            )
+        candidates = tuple(
+            item
+            for item in attach_by_calendar.get(calendar_id, ())
+            if item.calendar_kind == "pm"
+            and (
+                (item.resource_type == "stnfam" and item.resource_name == family_id)
+                or (
+                    item.resource_type == "stngrp"
+                    and item.resource_name == template.group_id
+                )
+            )
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                f"{calendar_id} 对 {family_id} 的 raw pm attachment 数量不是 1："
+                f"{len(candidates)}"
+            )
+        attachment = candidates[0]
+        if attachment.first_occurrence is None or attachment.first_occurrence_wafers is not None:
+            raise ValueError(
+                f"{calendar_id} 缺少可映射的 FOA first occurrence 分布"
+            )
+        if attachment.first_occurrence.kind != "constant":
+            raise ValueError(
+                f"{calendar_id} 的 FOA 不是 constant，不能无损映射 periodic first_start_time："
+                f"{attachment.first_occurrence.kind}"
+            )
+        first_start = to_runtime_distribution(attachment.first_occurrence)
+        if first_start.width_minutes != 0:
+            raise ValueError(f"{calendar_id} 的 FOA constant 宽度异常")
+        calendar_specs.append(
+            CalendarPMSpec(
+                pm_id=f"{calendar_id}@{selected_machine_id}",
+                machine_id=selected_machine_id,
+                model_type="periodic",
+                first_start_time=first_start.mean_minutes,
+                interval=to_runtime_distribution(calendar.interval),
+                duration=to_runtime_distribution(calendar.duration),
+            )
+        )
+        selected_attachments.append(attachment)
+
+    # Confirm the requested raw overlap using only constant raw interval/FOA
+    # values and the raw duration lower bounds.  LVHM is an exact same-start
+    # overlap; HVLM is a duration overlap (89.2/89.4 day).  If the data no
+    # longer supports the diagnostic clock, stop rather than silently changing
+    # the horizon or inventing a recurrence rule.
+    specs_by_suffix = {
+        calendar_id.rsplit("_", 1)[-1]: (calendar, attachment)
+        for calendar_id, calendar, attachment in zip(
+            expected_calendar_ids,
+            (pm_by_id[item] for item in expected_calendar_ids),
+            selected_attachments,
+            strict=True,
+        )
+    }
+
+    def calendar_clock_values(
+        calendar: CalendarDefinition,
+        attachment: CalendarAttachmentDefinition,
+    ) -> tuple[float, float, float]:
+        if calendar.interval is None or calendar.interval.kind != "constant":
+            raise ValueError(
+                f"{calendar.calendar_id} 的 raw interval 不是 constant，"
+                "不能验证固定 overlap clock"
+            )
+        if attachment.first_occurrence is None or attachment.first_occurrence.kind != "constant":
+            raise ValueError(
+                f"{calendar.calendar_id} 的 raw FOA 不是 constant，"
+                "不能验证固定 overlap clock"
+            )
+        if calendar.duration.kind not in {"constant", "uniform"}:
+            raise ValueError(
+                f"{calendar.calendar_id} 的 raw duration 不是可计算固定上下界的分布："
+                f"{calendar.duration.kind}"
+            )
+        interval = calendar.interval.parameter_1_minutes
+        if interval <= 0:
+            raise ValueError(f"{calendar.calendar_id} 的 raw interval 非正")
+        duration_lower = calendar.duration.parameter_1_minutes - (
+            calendar.duration.parameter_2_minutes or 0.0
+        ) / 2
+        if duration_lower <= 0:
+            raise ValueError(f"{calendar.calendar_id} 的 raw duration 下界非正")
+        return (
+            attachment.first_occurrence.parameter_1_minutes,
+            interval,
+            duration_lower,
+        )
+
+    pair_left, pair_right = target["overlap_pair"]
+    left_calendar, left_attachment = specs_by_suffix[pair_left]
+    right_calendar, right_attachment = specs_by_suffix[pair_right]
+    left_first, left_interval, left_duration_lower = calendar_clock_values(
+        left_calendar, left_attachment
+    )
+    right_first, right_interval, right_duration_lower = calendar_clock_values(
+        right_calendar, right_attachment
+    )
+    overlap_start: float | None = None
+    left_index = 0
+    right_index = 0
+    # Monotone two-pointer search avoids a quadratic nested scan.  The bound is
+    # an explicit diagnostic guard: raw conflicts must fail loudly rather than
+    # making loader time unbounded.  Both selected real models overlap within
+    # the first 13 occurrences, far below this guard.
+    for _ in range(100_001):
+        left_time = left_first + left_index * left_interval
+        right_time = right_first + right_index * right_interval
+        intervals_overlap = (
+            left_time <= right_time + right_duration_lower + 1e-9
+            and right_time <= left_time + left_duration_lower + 1e-9
+        )
+        if intervals_overlap:
+            overlap_start = max(left_time, right_time)
+            break
+        if left_time + left_duration_lower < right_time - 1e-9:
+            left_index += 1
+        else:
+            right_index += 1
+    if overlap_start is None:
+        raise ValueError(
+            "raw Calendar PM FOA/interval 不支持要求的同刻 overlap："
+            f"{pair_left}/{pair_right}"
+        )
+
+    duration_upper = max(
+        item.duration.mean_minutes + item.duration.width_minutes / 2
+        for item in calendar_specs
+    )
+    horizon = overlap_start + duration_upper + 1
+
+    def machine_attachment_matches(item: CalendarAttachmentDefinition) -> bool:
+        return (
+            item.resource_type == "stnfam"
+            and item.resource_name == template.tool_family_id
+        ) or (
+            item.resource_type == "stngrp"
+            and item.resource_name == template.group_id
+        )
+
+    selected_ids = set(expected_calendar_ids)
+    omitted_failure_ids: set[str] = set()
+    omitted_calendar_pm_ids: set[str] = set()
+    omitted_wafer_pm_ids: set[str] = set()
+    for attachment in model.calendar_attachments:
+        if not machine_attachment_matches(attachment):
+            continue
+        if attachment.calendar_kind == "down":
+            omitted_failure_ids.add(attachment.calendar_id)
+            continue
+        if attachment.calendar_kind != "pm" or attachment.calendar_id in selected_ids:
+            continue
+        calendar = pm_by_id.get(attachment.calendar_id)
+        if calendar is None:
+            continue
+        if calendar.interval is not None:
+            omitted_calendar_pm_ids.add(attachment.calendar_id)
+        elif calendar.wafer_threshold is not None:
+            omitted_wafer_pm_ids.add(attachment.calendar_id)
+
+    omitted_machine_ids = tuple(
+        sorted(
+            machine_id
+            for machine_id in operation.eligible_machine_ids
+            if machine_id != selected_machine_id
+        )
+    )
+    omitted_route_steps = tuple(
+        str(item.step_id)
+        for item in route.operations
+        if item.step_id != operation.step_id
+    )
+    omitted_prior_route_steps = tuple(
+        str(item.step_id)
+        for item in route.operations
+        if item.step_id < operation.step_id
+    )
+    omitted_future_route_steps = tuple(
+        str(item.step_id)
+        for item in route.operations
+        if item.step_id > operation.step_id
+    )
+    omitted_rework_links = tuple(
+        f"{item.route_id}:{item.step_id}->{item.rework_step_id}"
+        for item in route.operations
+        if item.rework_step_id is not None
+    )
+    processing = to_runtime_distribution(operation.processing)
+    runtime_operation = OperationSpec(
+        operation.step_id,
+        processing.mean_minutes,
+        (selected_machine_id,),
+        route_id=operation.route_id,
+        tool_group_id=operation.tool_family_id,
+        processing_distribution=processing,
+        processing_basis=operation.processing_basis,
+    )
+    lot = LotSpec(
+        wip.lot_id,
+        0.0,
+        (runtime_operation,),
+        quantity_wafers=wip.quantity_wafers,
+        due_time=wip.due_minutes,
+        priority=wip.priority,
+        is_initial_wip=True,
+        product_id=wip.product_id,
+        order_id=wip.order_id,
+        hot_lot=wip.hot_lot,
+        source_row=wip.source_row,
+    )
+    machine = MachineSpec(
+        selected_machine_id,
+        load_minutes=template.load_minutes,
+        unload_minutes=template.unload_minutes,
+        cascading=template.cascading,
+        location_id=template.location_id,
+        setup_group=template.setup_group,
+    )
+
+    def raw_distribution_text(definition: DistributionDefinition) -> str:
+        second = "" if definition.parameter_2_minutes is None else str(definition.parameter_2_minutes)
+        return f"{definition.kind}:{definition.parameter_1_minutes}:{second}:{definition.raw_unit}"
+
+    calendar_mapping = ";".join(
+        f"{calendar.calendar_id}->pm_id={spec.pm_id},"
+        f"interval={raw_distribution_text(calendar.interval)},"
+        f"duration={raw_distribution_text(calendar.duration)},"
+        f"foa={raw_distribution_text(attachment.first_occurrence)}"
+        for calendar, attachment, spec in zip(
+            (pm_by_id[item] for item in expected_calendar_ids),
+            selected_attachments,
+            calendar_specs,
+            strict=True,
+        )
+    )
+    pmcal_source_rows = ";".join(
+        f"{calendar.calendar_id}:{calendar.source_row}"
+        for calendar in (pm_by_id[item] for item in expected_calendar_ids)
+    )
+    attach_source_rows = ";".join(
+        f"{attachment.calendar_id}:{attachment.source_row}"
+        for attachment in selected_attachments
+    )
+    attach_identity = ";".join(
+        f"{attachment.calendar_id}:{attachment.resource_type}:{attachment.resource_name}"
+        for attachment in selected_attachments
+    )
+    provenance_items = config.provenance_items() + (
+        ("multi_calendar_slice_model", manifest.model_name),
+        ("multi_calendar_slice_family", family_id),
+        ("multi_calendar_slice_machine_id", selected_machine_id),
+        ("multi_calendar_slice_machine_source_row", str(template.source_row)),
+        ("multi_calendar_slice_machine_location", template.location_id),
+        ("multi_calendar_slice_machine_cascading", str(template.cascading)),
+        ("multi_calendar_slice_raw_load_minutes", str(template.load_minutes)),
+        ("multi_calendar_slice_raw_unload_minutes", str(template.unload_minutes)),
+        ("multi_calendar_slice_machine_setup_group", template.setup_group or ""),
+        ("multi_calendar_slice_lot_id", wip.lot_id),
+        ("multi_calendar_slice_wip_product_id", wip.product_id),
+        ("multi_calendar_slice_route_id", operation.route_id),
+        ("multi_calendar_slice_current_step", str(operation.step_id)),
+        ("multi_calendar_slice_operation_source_file", route.source_file),
+        ("multi_calendar_slice_operation_source_row", str(operation.source_row)),
+        ("multi_calendar_slice_wip_source_row", str(wip.source_row)),
+        ("multi_calendar_slice_wip_source_start_minutes", str(wip.source_start_minutes)),
+        ("multi_calendar_slice_wip_source_trace", wip.source_trace or ""),
+        ("multi_calendar_slice_calendar_ids", ",".join(expected_calendar_ids)),
+        ("multi_calendar_slice_runtime_pm_ids", ",".join(item.pm_id for item in calendar_specs)),
+        ("multi_calendar_slice_pmcal_source_rows", pmcal_source_rows),
+        ("multi_calendar_slice_attach_source_rows", attach_source_rows),
+        ("multi_calendar_slice_attach_identity", attach_identity),
+        ("multi_calendar_slice_calendar_mapping", calendar_mapping),
+        ("multi_calendar_slice_overlap_pair", f"{pair_left}/{pair_right}"),
+        ("multi_calendar_slice_overlap_start_minutes", str(overlap_start)),
+        ("multi_calendar_slice_horizon_minutes", str(horizon)),
+        ("multi_calendar_slice_raw_eligible_machine_count", str(len(operation.eligible_machine_ids))),
+        ("multi_calendar_slice_omitted_machine_ids", ",".join(omitted_machine_ids)),
+        ("multi_calendar_slice_omitted_failure_calendar_ids", ",".join(sorted(omitted_failure_ids))),
+        ("multi_calendar_slice_omitted_calendar_pm_ids", ",".join(sorted(omitted_calendar_pm_ids))),
+        ("multi_calendar_slice_omitted_wafer_pm_ids", ",".join(sorted(omitted_wafer_pm_ids))),
+        ("multi_calendar_slice_omitted_route_steps", ",".join(omitted_route_steps)),
+        (
+            "multi_calendar_slice_omitted_prior_route_steps",
+            ",".join(omitted_prior_route_steps),
+        ),
+        (
+            "multi_calendar_slice_omitted_future_route_steps",
+            ",".join(omitted_future_route_steps),
+        ),
+        ("multi_calendar_slice_omitted_rework_links", ";".join(omitted_rework_links)),
+        ("multi_calendar_slice_initial_setup", "unknown"),
+        ("multi_calendar_slice_initial_cqt_history", "unknown"),
+        ("multi_calendar_slice_initial_dedication_history", "unknown"),
+        ("multi_calendar_slice_initial_wafer_pm_counter", "unknown"),
+        (
+            "multi_calendar_slice_profile_constraints",
+            "one_initial_wip;one_current_operation;processing_basis=per_piece;"
+            "sampling=None;setup=None;batch=None;interval=None;noncascade=True",
+        ),
+        (
+            "multi_calendar_slice_scope_boundary",
+            "diagnostic_only;not_full_fab;does_not_close_DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
+        ),
+    )
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        provenance_items,
+        tuple(
+            SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256)
+            for item in manifest.files
+        ),
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:multi-calendar-validation-slice:"
+            f"{operation.route_id}:{operation.step_id}:{wip.lot_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=(machine,),
+        lots=(lot,),
+        termination_mode="fixed_horizon",
+        horizon=horizon,
+        calendar_pm_specs=tuple(calendar_specs),
         dataset_provenance=provenance,
     )
 

@@ -1,7 +1,7 @@
 # SMT2020 Non-cascade LOAD/UNLOAD Runtime 审计
 
 审计日期：2026-09-27
-适用契约：Simulation Contract `0.1.7`；Data Contract `0.1.6`；Loader Contract `0.1.6`
+原审计契约：Simulation Contract `0.1.7`；Data Contract `0.1.6`；Loader Contract `0.1.6`。当前版本为 Simulation `0.1.8`、Data `0.1.7`、Loader `0.1.7`；non-cascade L/U 子链语义未改。
 
 本文记录本轮实现对 non-cascade、non-batch 受限子链的语义冻结和证据边界。它是 `smt2020-cascade-semantic-audit.md` 的 runtime 补充，不是完整 SMT2020 Data Integration Gate 通过证明；`DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 仍为 OPEN/BLOCKER。
 

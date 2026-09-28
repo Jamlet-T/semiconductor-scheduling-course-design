@@ -2,7 +2,7 @@
 
 审计日期：2026-09-27
 状态：**raw 关系已核对；返工 visit/lifecycle 尚未闭环；`DI_UNSUPPORTED_REWORK` 仍为 BLOCKER。**
-适用契约：Simulation Contract `0.1.6`、Loader Contract `0.1.4`、Policy Contract `0.1.1`、Data Contract `0.1.4`
+原审计基线：Simulation Contract `0.1.6`、Loader Contract `0.1.4`、Policy Contract `0.1.1`、Data Contract `0.1.4`；2026-09-28 复核后当前版本为 Simulation `0.1.8`、Loader `0.1.7`、Policy `0.1.1`、Data `0.1.7`，未改变返工语义。
 
 本文只审计 SMT2020 的 `RWKSTEP/REWORK/RWKTYPE` 与它和 sampling、dedication、CQT、initial WIP 的组合关系。它不修改任何契约版本、Gate exit criteria、测试数量或优化器状态；也不把参考实现的行为升级为 SMT2020 真值。
 
@@ -30,7 +30,7 @@ HVLM/LVHM 的返工字段已经可以从 raw 读入并做静态 reconciliation�
 | **D** | 固定的 PySCFabSim 开源参考实现 | 可复现实参考行为：每 lot/source 最多一次返工判定、每次进入 sampled operation 重新判定、显式 dedication 才绑定物理机 | SMT2020 数据集真值、本项目必须采用的语义 |
 | **E** | 本项目显式、版本化的建模/验收假设 | 如何设计 trace、最小 slice、候选假设对照和拒绝条件 | 将假设写成“raw 规定”或“论文已证明” |
 
-数据身份沿用 Gate 的只读 manifest：HVLM 为 `SMT2020_HVLM@sha256:8b5ad109d1052dff53c4354f4567a71b84c27b2badf159105194e46cde4a8cd7`，LVHM 为 `SMT2020_LVHM@sha256:80c8ccc08aa8f3ed5338cbb27af4db20c82deeca24c5fa060b57268ca3ae247c`。下文的 A/B 计数均指该数据身份下的 raw audit，不是新生成的数据集。
+数据身份沿用 Gate 的只读 manifest（Loader `0.1.7`）：HVLM 为 `SMT2020_HVLM@sha256:5f7e76a8c2791717585f7af586d3b052f99f2690ac850fb00c5ba0cbecbffc84`，LVHM 为 `SMT2020_LVHM@sha256:06625a12b5a8073ff393431e903e782255e3e20be0c97991ed96583e35a6219c`。下文的 A/B 计数仍指相同 raw 字节下的审计，不是新生成的数据集；manifest identity 随 loader version 更新。
 
 ## 3. Raw audit：已观察到的结构
 
@@ -104,9 +104,22 @@ raw audit 观察到 source 与 return 的 `STNFAM` 不同，且由 `STNFAM` 展�
 4. **dedication 生命周期可能被回跳重新进入。** return 等于 dedication target 的 5/17 关系要求明确绑定按哪一个 visit 建立/释放。source/return 资格集合交集为 0 只能排除普通 qualification 的共同机器，不能排除 per-step 同机重做，因此不能用交集结果替代语义决定。
 5. **存在需追踪的静态约束关系。** 闭区间诊断筛出 13/42 条可能与 dedication 关系相交的返工规则；实际回跳后绑定是保留、重新建立还是释放仍未定义。CQT 虽无边穿越回跳段，仍不能替代 loop/dedication/sampling 约束。
 
-现有 sampling validation slice 有意排除 rework，且只证明 `visit_index=0` 的 decision/mapping；它不能作为返工物理闭包或正式 KPI 证据。故 Gate 的五类 blocker、`not_passed_gaps` 和 `optimizer_enabled=false` 均保持原状。
+现有 sampling validation slice 有意排除 rework，且只证明 `visit_index=0` 的 decision/mapping；它不能作为返工物理闭包或正式 KPI 证据。当前显式 v1 Batch 配置下 Gate 仍有四类 blocker（默认无配置为五类），`not_passed_gaps` 和 `optimizer_enabled=false` 均保持原状。
 
 ## 6. 下一步最小可验收 slice（提案，未执行）
+
+### 2026-09-28 真实非级联候选复核
+
+原始数据中确有避开 cascade、Batch、Setup、Part/BatchInterval 和 CQT 的返工三步段，不应把这些其他 blocker 误当成所有返工的必经依赖：
+
+| 模型与 raw route 行 | 回跳段 | sampling | initial WIP 对照 | 仍未闭合的关键点 |
+| --- | --- | --- | --- | --- |
+| HVLM `route_3.txt:492-494` | `491→493`，source `REWORK=1%`、`RWKTYPE=lot` | middle step 492 为 `19%`；source step 493 为 `44%` | `WIP.txt:41` 位于 source；`:140` 位于 return | 每次重入是否重抽、历史 visit 与同机语义未知 |
+| LVHM `route_2.txt:460-462` | `459→461`，source `REWORK=1.4%`、`RWKTYPE=lot` | middle step 460 为 `15%`；source step 461 为 `42%` | `WIP.txt:504` 位于 source；`:508` 位于 return | 同上 |
+
+上述三步段的 tool template 均为 non-cascade、每次 LOAD/UNLOAD 各 1 min；它们仅是可追溯的**静态候选**。逐台展开真实附件后，`Litho_BE_110` 的每台合格机有 1 条 failure、3 条 calendar PM，`LithoMet_BE_18` 与 `Litho_REG_BE_63` 各有 1 条 failure、2 条 calendar PM，均无 wafer PM；因此保留真实维护配置的物理闭环还依赖 Multi-calendar，不能用省略日历的诊断 slice 冒充完整兼容。每个候选段都包含真实 sampling 重入；source 与 return 的普通 qualification 机台交集在两模型 14/52 条返工规则中均为零，这不裁决论文所说的 per-step “same machines”。initial WIP 无法提供仿真零点前的 visit、抽样与机器历史。因此即使现有 non-cascade L/U 已可执行，也不能从这些候选直接推出可信 rework route loop 或关闭 `DI_UNSUPPORTED_REWORK`。后续若选择本地 E 级 `lot/source once` 等规则，必须先版本化冻结并与按 visit 重判等替代解释做 trace 对照。
+
+`04-项目实现/tests/test_smt2020_rework_candidate.py` 对上述 raw 行、parser、initial WIP、所有合格机的装卸与附件交集以及默认/audit 模式仍保留 blocker 做 4 项回归；它是静态证据，不执行返工仿真。
 
 目标是先验收语义链，不比较策略性能，不启动 full-fab 实验。每个模型各选择一条真实 route/source row，组成同一个 provenance 可追踪的 slice，至少覆盖：
 
