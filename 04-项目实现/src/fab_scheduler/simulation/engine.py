@@ -112,7 +112,9 @@ class LotStatus(str, Enum):
 class MachineStatus(str, Enum):
     IDLE = "IDLE"
     SETTING_UP = "SETTING_UP"
+    LOADING = "LOADING"
     PROCESSING = "PROCESSING"
+    UNLOADING = "UNLOADING"
 
 
 class MachineAvailability(str, Enum):
@@ -127,7 +129,9 @@ class DowntimeCause(str, Enum):
 
 
 class ActivityKind(str, Enum):
+    LOAD = "LOAD"
     PROCESS = "PROCESS"
+    UNLOAD = "UNLOAD"
     SETUP = "SETUP"
     BATCH = "BATCH"
 
@@ -153,6 +157,8 @@ class _LotRuntime:
 class _MachineRuntime:
     machine_id: str
     location_id: str | None = None
+    load_minutes: float = 0.0
+    unload_minutes: float = 0.0
     setup_group: str | None = None
     current_setup: str = ""
     setup_run_count: int = 0
@@ -164,6 +170,7 @@ class _MachineRuntime:
     setup_from: str | None = None
     setup_to: str | None = None
     processing_started_at: float | None = None
+    phase_started_at: float | None = None
     active_batch_id: str | None = None
     availability: MachineAvailability = MachineAvailability.UP
     activity_token: int = 0
@@ -196,6 +203,18 @@ class _ActiveBatch:
 
 @dataclass(frozen=True, slots=True)
 class ProcessingInterval:
+    lot_id: str
+    machine_id: str
+    route_id: str
+    step_id: int
+    start: float
+    finish: float
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseInterval:
+    """独立的装载或卸载占用区间；不计入纯 processing interval。"""
+
     lot_id: str
     machine_id: str
     route_id: str
@@ -356,6 +375,8 @@ class MachineStatistics:
     final_state: str
     final_setup: str
     active_batch_id: str | None
+    load_time: float = 0.0
+    unload_time: float = 0.0
     downtime: float = 0.0
     availability: str = MachineAvailability.UP.value
     failure_count: int = 0
@@ -414,6 +435,8 @@ class SimulationResult:
     metrics: SimulationMetrics
     trace: tuple[TraceRecord, ...]
     processing_intervals: tuple[ProcessingInterval, ...]
+    load_intervals: tuple[PhaseInterval, ...]
+    unload_intervals: tuple[PhaseInterval, ...]
     setup_intervals: tuple[SetupInterval, ...]
     batch_intervals: tuple[BatchInterval, ...]
     active_batches: tuple[ActiveBatchSnapshot, ...]
@@ -484,6 +507,12 @@ class SimulationResult:
             "BATCH_START",
             "BATCH_FINISH",
             "PROCESS_START",
+            "LOAD_START",
+            "LOAD_FINISH",
+            "PROCESS_CORE_START",
+            "PROCESS_CORE_FINISH",
+            "UNLOAD_START",
+            "UNLOAD_FINISH",
             "PROCESS_FINISH",
             "ROUTE_ADVANCE",
             "LOT_COMPLETE",
@@ -628,6 +657,8 @@ class Simulator:
         self._pending_dispatch_barriers: set[float] = set()
         self._trace: list[TraceRecord] = []
         self._processing_intervals: list[ProcessingInterval] = []
+        self._load_intervals: list[PhaseInterval] = []
+        self._unload_intervals: list[PhaseInterval] = []
         self._setup_intervals: list[SetupInterval] = []
         self._batch_intervals: list[BatchInterval] = []
         self._downtime_intervals: list[DowntimeInterval] = []
@@ -680,6 +711,8 @@ class Simulator:
             machine.machine_id: _MachineRuntime(
                 machine_id=machine.machine_id,
                 location_id=machine.location_id,
+                load_minutes=machine.load_minutes,
+                unload_minutes=machine.unload_minutes,
                 setup_group=machine.setup_group,
                 current_setup=machine.initial_setup,
                 setup_run_count=machine.initial_setup_run_count or 0,
@@ -736,6 +769,7 @@ class Simulator:
         )
         assert end_time is not None
         self.current_time = end_time
+        self._finalize_phase_snapshots(end_time)
         metrics = self._build_metrics(end_time)
         machine_statistics = self._build_machine_statistics(end_time)
         open_cqt_clocks = self._cqt_runtime.terminal_snapshots(
@@ -831,6 +865,13 @@ class Simulator:
                     "identity": "lot_id+route_id+step_id+visit_index",
                     "draw": "uniform(0,100), draw<=sample_percent",
                 },
+                "load_unload_runtime": {
+                    "schema_version": "0.1.0",
+                    "phase_order": ["LOAD", "PROCESS_CORE", "UNLOAD"],
+                    "canonical_completion": "PROCESS_FINISH",
+                    "processing_sample_point": "PROCESS_CORE_START",
+                    "supported_scope": "noncascade_nonbatch",
+                },
                 "release_runtime": {
                     "schema_version": RELEASE_RUNTIME_SCHEMA_VERSION,
                     "id": RELEASE_RUNTIME_ID,
@@ -890,6 +931,8 @@ class Simulator:
             metrics=metrics,
             trace=tuple(self._trace),
             processing_intervals=tuple(self._processing_intervals),
+            load_intervals=tuple(self._load_intervals),
+            unload_intervals=tuple(self._unload_intervals),
             setup_intervals=tuple(self._setup_intervals),
             batch_intervals=tuple(self._batch_intervals),
             active_batches=active_batches,
@@ -1074,6 +1117,12 @@ class Simulator:
     def _handle(self, event: Event) -> None:
         if event.event_type is EventType.LOT_RELEASE:
             self._handle_release(event)
+        elif event.event_type is EventType.LOAD_FINISH:
+            self._handle_load_finish(event)
+        elif event.event_type is EventType.PROCESS_CORE_FINISH:
+            self._handle_process_core_finish(event)
+        elif event.event_type is EventType.UNLOAD_FINISH:
+            self._handle_unload_finish(event)
         elif event.event_type is EventType.PROCESS_FINISH:
             self._handle_process_finish(event)
         elif event.event_type is EventType.BATCH_FINISH:
@@ -1658,6 +1707,10 @@ class Simulator:
             kind = ActivityKind.SETUP
             self._append_setup_segment(machine, self.current_time)
             suspend_event = "SETUP_SUSPEND"
+        elif machine.status is MachineStatus.LOADING:
+            kind = ActivityKind.LOAD
+            self._append_phase_segment(machine, self.current_time, kind)
+            suspend_event = "LOAD_SUSPEND"
         elif machine.active_batch_id is not None:
             kind = ActivityKind.BATCH
             batch = self._active_batches[machine.active_batch_id]
@@ -1666,6 +1719,10 @@ class Simulator:
             batch.accumulated_processing_time += self.current_time - machine.processing_started_at
             batch.scheduled_finish_time = None
             suspend_event = "BATCH_SUSPEND"
+        elif machine.status is MachineStatus.UNLOADING:
+            kind = ActivityKind.UNLOAD
+            self._append_phase_segment(machine, self.current_time, kind)
+            suspend_event = "UNLOAD_SUSPEND"
         else:
             kind = ActivityKind.PROCESS
             self._append_processing_segment(machine, self.current_time)
@@ -1676,6 +1733,7 @@ class Simulator:
         machine.scheduled_activity_finish = None
         machine.processing_started_at = None
         machine.setup_started_at = None
+        machine.phase_started_at = None
         self._record(
             event_type=suspend_event,
             priority=event.priority,
@@ -1716,13 +1774,46 @@ class Simulator:
                 entity_id=machine.machine_id,
                 payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "from_setup": machine.setup_from, "to_setup": machine.setup_to, "activity_token": token},
             )
+        elif interrupted.kind is ActivityKind.LOAD:
+            machine.status = MachineStatus.LOADING
+            machine.phase_started_at = self.current_time
+            lot = self._lots[machine.lot_id]
+            self._record_resume(event, machine, lot, "LOAD_RESUME", interrupted, token)
+            self._schedule(
+                time=finish_time,
+                event_type=EventType.LOAD_FINISH,
+                entity_id=machine.machine_id,
+                payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "activity_token": token},
+            )
         elif interrupted.kind is ActivityKind.PROCESS:
             machine.processing_started_at = self.current_time
             lot = self._lots[machine.lot_id]
-            self._record_resume(event, machine, lot, "PROCESS_RESUME", interrupted, token)
+            self._record_resume(
+                event,
+                machine,
+                lot,
+                "PROCESS_RESUME",
+                interrupted,
+                token,
+            )
             self._schedule(
                 time=finish_time,
-                event_type=EventType.PROCESS_FINISH,
+                event_type=(
+                    EventType.PROCESS_CORE_FINISH
+                    if machine.load_minutes > 0 or machine.unload_minutes > 0
+                    else EventType.PROCESS_FINISH
+                ),
+                entity_id=machine.machine_id,
+                payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "activity_token": token},
+            )
+        elif interrupted.kind is ActivityKind.UNLOAD:
+            machine.status = MachineStatus.UNLOADING
+            machine.phase_started_at = self.current_time
+            lot = self._lots[machine.lot_id]
+            self._record_resume(event, machine, lot, "UNLOAD_RESUME", interrupted, token)
+            self._schedule(
+                time=finish_time,
+                event_type=EventType.UNLOAD_FINISH,
                 entity_id=machine.machine_id,
                 payload={"machine_id": machine.machine_id, "lot_id": machine.lot_id, "operation_index": machine.operation_index, "activity_token": token},
             )
@@ -1783,6 +1874,33 @@ class Simulator:
         self._processing_intervals.append(
             ProcessingInterval(lot.spec.lot_id, machine.machine_id, operation.route_id, operation.step_id, machine.processing_started_at, finish)
         )
+
+    def _append_phase_segment(
+        self,
+        machine: _MachineRuntime,
+        finish: float,
+        kind: ActivityKind,
+    ) -> None:
+        if (
+            machine.lot_id is None
+            or machine.phase_started_at is None
+            or kind not in {ActivityKind.LOAD, ActivityKind.UNLOAD}
+        ):
+            raise SimulationError("装卸活动段缺少 lot 或开始时刻")
+        lot = self._lots[machine.lot_id]
+        operation = lot.spec.operations[lot.operation_index]
+        interval = PhaseInterval(
+            lot.spec.lot_id,
+            machine.machine_id,
+            operation.route_id,
+            operation.step_id,
+            machine.phase_started_at,
+            finish,
+        )
+        if kind is ActivityKind.LOAD:
+            self._load_intervals.append(interval)
+        else:
+            self._unload_intervals.append(interval)
 
     def _append_setup_segment(self, machine: _MachineRuntime, finish: float) -> None:
         if machine.lot_id is None or machine.setup_started_at is None or machine.setup_from is None or machine.setup_to is None:
@@ -2363,6 +2481,69 @@ class Simulator:
         lot: _LotRuntime,
         machine: _MachineRuntime,
     ) -> None:
+        if machine.load_minutes > 0:
+            self._begin_load(
+                cause_event_seq=cause_event_seq,
+                priority=priority,
+                lot=lot,
+                machine=machine,
+            )
+            return
+        self._begin_processing_core(
+            cause_event_seq=cause_event_seq,
+            priority=priority,
+            lot=lot,
+            machine=machine,
+        )
+
+    def _begin_load(
+        self,
+        *,
+        cause_event_seq: int,
+        priority: int,
+        lot: _LotRuntime,
+        machine: _MachineRuntime,
+    ) -> None:
+        if lot.status is not LotStatus.RESERVED:
+            raise SimulationError("装载开始时 lot 未被保留")
+        if machine.lot_id != lot.spec.lot_id:
+            raise SimulationError("装载开始时 machine 未保留该 lot")
+        operation = lot.spec.operations[lot.operation_index]
+        machine.status = MachineStatus.LOADING
+        machine.phase_started_at = self.current_time
+        finish_time = self.current_time + machine.load_minutes
+        token = self._activate_until(machine, finish_time)
+        self._record(
+            event_type="LOAD_START",
+            priority=priority,
+            cause_event_seq=cause_event_seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine.machine_id,
+            activity_token=token,
+            state_before="LOT:RESERVED|MACHINE:RESERVED",
+            state_after="LOT:RESERVED|MACHINE:LOADING",
+        )
+        self._schedule(
+            time=finish_time,
+            event_type=EventType.LOAD_FINISH,
+            entity_id=machine.machine_id,
+            payload={
+                "machine_id": machine.machine_id,
+                "lot_id": lot.spec.lot_id,
+                "operation_index": lot.operation_index,
+                "activity_token": token,
+            },
+        )
+
+    def _begin_processing_core(
+        self,
+        *,
+        cause_event_seq: int,
+        priority: int,
+        lot: _LotRuntime,
+        machine: _MachineRuntime,
+    ) -> None:
         if lot.status is not LotStatus.RESERVED:
             raise SimulationError("加工开始时 lot 未被保留")
         if machine.lot_id != lot.spec.lot_id:
@@ -2381,6 +2562,9 @@ class Simulator:
         finish_time = self.current_time + realization.realized_minutes
         token = self._activate_until(machine, finish_time)
         self._record(
+            # PROCESS_START 是现有审计/CQT 的 canonical core-entry witness；
+            # 正装卸阶段仍保留该事件名，装卸阶段由独立的 LOAD/UNLOAD trace
+            # 表达，不额外发同一时刻的 PROCESS_CORE_START，避免重复计数。
             event_type="PROCESS_START",
             priority=priority,
             cause_event_seq=cause_event_seq,
@@ -2398,13 +2582,234 @@ class Simulator:
         )
         self._schedule(
             time=finish_time,
-            event_type=EventType.PROCESS_FINISH,
+            event_type=(
+                EventType.PROCESS_CORE_FINISH
+                if machine.load_minutes > 0 or machine.unload_minutes > 0
+                else EventType.PROCESS_FINISH
+            ),
             entity_id=machine.machine_id,
             payload={
                 "machine_id": machine.machine_id,
                 "lot_id": lot.spec.lot_id,
                 "operation_index": lot.operation_index,
                 "activity_token": token,
+            },
+        )
+
+    def _handle_load_finish(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        lot_id = event.payload["lot_id"]
+        operation_index = event.payload["operation_index"]
+        machine = self._machines[machine_id]
+        lot = self._lots[lot_id]
+        if event.payload["activity_token"] != machine.activity_token:
+            self._record(
+                event_type="LOAD_FINISH_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=lot.spec.operations[operation_index],
+                machine_id=machine_id,
+                activity_token=event.payload["activity_token"],
+                state_before="STALE_TOKEN",
+                state_after="NO_EFFECT",
+            )
+            return
+        if (
+            machine.status is not MachineStatus.LOADING
+            or machine.lot_id != lot_id
+            or machine.operation_index != operation_index
+            or lot.status is not LotStatus.RESERVED
+            or lot.operation_index != operation_index
+            or machine.phase_started_at is None
+        ):
+            raise SimulationError(f"LOAD_FINISH 状态不一致：{event.payload}")
+        operation = lot.spec.operations[operation_index]
+        self._load_intervals.append(
+            PhaseInterval(
+                lot_id,
+                machine_id,
+                operation.route_id,
+                operation.step_id,
+                machine.phase_started_at,
+                self.current_time,
+            )
+        )
+        self._record(
+            event_type="LOAD_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine_id,
+            activity_token=machine.activity_token,
+            state_before="LOT:RESERVED|MACHINE:LOADING",
+            state_after="LOT:RESERVED|MACHINE:READY",
+        )
+        machine.phase_started_at = None
+        machine.status = MachineStatus.IDLE
+        machine.scheduled_activity_finish = None
+        self._begin_processing_core(
+            cause_event_seq=event.seq,
+            priority=event.priority,
+            lot=lot,
+            machine=machine,
+        )
+
+    def _handle_process_core_finish(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        lot_id = event.payload["lot_id"]
+        operation_index = event.payload["operation_index"]
+        machine = self._machines[machine_id]
+        lot = self._lots[lot_id]
+        if event.payload["activity_token"] != machine.activity_token:
+            self._record(
+                event_type="PROCESS_CORE_FINISH_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=lot.spec.operations[operation_index],
+                machine_id=machine_id,
+                activity_token=event.payload["activity_token"],
+                state_before="STALE_TOKEN",
+                state_after="NO_EFFECT",
+            )
+            return
+        if (
+            machine.status is not MachineStatus.PROCESSING
+            or machine.active_batch_id is not None
+            or machine.lot_id != lot_id
+            or machine.operation_index != operation_index
+            or lot.status is not LotStatus.PROCESSING
+            or lot.operation_index != operation_index
+            or machine.processing_started_at is None
+        ):
+            raise SimulationError(f"PROCESS_CORE_FINISH 状态不一致：{event.payload}")
+        operation = lot.spec.operations[operation_index]
+        self._processing_intervals.append(
+            ProcessingInterval(
+                lot_id,
+                machine_id,
+                operation.route_id,
+                operation.step_id,
+                machine.processing_started_at,
+                self.current_time,
+            )
+        )
+        self._record(
+            event_type="PROCESS_CORE_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine_id,
+            activity_token=machine.activity_token,
+            state_before="LOT:PROCESSING|MACHINE:PROCESSING",
+            state_after="LOT:PROCESSED|MACHINE:READY",
+        )
+        machine.processing_started_at = None
+        machine.scheduled_activity_finish = None
+        if machine.unload_minutes > 0:
+            machine.status = MachineStatus.UNLOADING
+            machine.phase_started_at = self.current_time
+            finish_time = self.current_time + machine.unload_minutes
+            token = self._activate_until(machine, finish_time)
+            self._record(
+                event_type="UNLOAD_START",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=operation,
+                machine_id=machine_id,
+                activity_token=token,
+                state_before="LOT:PROCESSED|MACHINE:PROCESSING",
+                state_after="LOT:PROCESSED|MACHINE:UNLOADING",
+            )
+            self._schedule(
+                time=finish_time,
+                event_type=EventType.UNLOAD_FINISH,
+                entity_id=machine_id,
+                payload={
+                    "machine_id": machine_id,
+                    "lot_id": lot_id,
+                    "operation_index": operation_index,
+                    "activity_token": token,
+                },
+            )
+            return
+        self._schedule(
+            time=self.current_time,
+            event_type=EventType.PROCESS_FINISH,
+            entity_id=machine_id,
+            payload={
+                "machine_id": machine_id,
+                "lot_id": lot_id,
+                "operation_index": operation_index,
+                "activity_token": machine.activity_token,
+            },
+        )
+
+    def _handle_unload_finish(self, event: Event) -> None:
+        machine_id = event.payload["machine_id"]
+        lot_id = event.payload["lot_id"]
+        operation_index = event.payload["operation_index"]
+        machine = self._machines[machine_id]
+        lot = self._lots[lot_id]
+        if event.payload["activity_token"] != machine.activity_token:
+            self._record(
+                event_type="UNLOAD_FINISH_STALE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=lot.spec.operations[operation_index],
+                machine_id=machine_id,
+                activity_token=event.payload["activity_token"],
+                state_before="STALE_TOKEN",
+                state_after="NO_EFFECT",
+            )
+            return
+        if (
+            machine.status is not MachineStatus.UNLOADING
+            or machine.lot_id != lot_id
+            or machine.operation_index != operation_index
+            or lot.status is not LotStatus.PROCESSING
+            or lot.operation_index != operation_index
+            or machine.phase_started_at is None
+        ):
+            raise SimulationError(f"UNLOAD_FINISH 状态不一致：{event.payload}")
+        operation = lot.spec.operations[operation_index]
+        self._unload_intervals.append(
+            PhaseInterval(
+                lot_id,
+                machine_id,
+                operation.route_id,
+                operation.step_id,
+                machine.phase_started_at,
+                self.current_time,
+            )
+        )
+        self._record(
+            event_type="UNLOAD_FINISH",
+            priority=event.priority,
+            cause_event_seq=event.seq,
+            lot=lot,
+            operation=operation,
+            machine_id=machine_id,
+            activity_token=machine.activity_token,
+            state_before="LOT:PROCESSED|MACHINE:UNLOADING",
+            state_after="LOT:PROCESSED|MACHINE:READY",
+        )
+        machine.phase_started_at = None
+        machine.scheduled_activity_finish = None
+        self._schedule(
+            time=self.current_time,
+            event_type=EventType.PROCESS_FINISH,
+            entity_id=machine_id,
+            payload={
+                "machine_id": machine_id,
+                "lot_id": lot_id,
+                "operation_index": operation_index,
+                "activity_token": machine.activity_token,
             },
         )
 
@@ -2496,7 +2901,10 @@ class Simulator:
             )
             return
         if (
-            machine.status is not MachineStatus.PROCESSING
+            machine.status not in {
+                MachineStatus.PROCESSING,
+                MachineStatus.UNLOADING,
+            }
             or machine.active_batch_id is not None
             or machine.lot_id != lot_id
             or machine.operation_index != operation_index
@@ -2505,18 +2913,19 @@ class Simulator:
         ):
             raise SimulationError(f"PROCESS_FINISH 状态不一致：{event.payload}")
         operation = lot.spec.operations[operation_index]
-        if machine.processing_started_at is None:
-            raise SimulationError("加工结束时缺少开始时间")
-        self._processing_intervals.append(
-            ProcessingInterval(
-                lot_id=lot_id,
-                machine_id=machine_id,
-                route_id=operation.route_id,
-                step_id=operation.step_id,
-                start=machine.processing_started_at,
-                finish=self.current_time,
+        if machine.processing_started_at is not None:
+            self._processing_intervals.append(
+                ProcessingInterval(
+                    lot_id=lot_id,
+                    machine_id=machine_id,
+                    route_id=operation.route_id,
+                    step_id=operation.step_id,
+                    start=machine.processing_started_at,
+                    finish=self.current_time,
+                )
             )
-        )
+        elif not (machine.load_minutes > 0 or machine.unload_minutes > 0):
+            raise SimulationError("加工结束时缺少开始时间")
         self._record(
             event_type="PROCESS_FINISH",
             priority=event.priority,
@@ -2524,7 +2933,15 @@ class Simulator:
             lot=lot,
             operation=operation,
             machine_id=machine_id,
-            state_before="LOT:PROCESSING|MACHINE:PROCESSING",
+            state_before=(
+                "LOT:PROCESSING|MACHINE:PROCESSING"
+                if machine.processing_started_at is not None
+                else (
+                    "LOT:PROCESSED|MACHINE:UNLOADING"
+                    if machine.status is MachineStatus.UNLOADING
+                    else "LOT:PROCESSED|MACHINE:PROCESSING"
+                )
+            ),
             state_after="LOT:PROCESSED|MACHINE:IDLE",
         )
         self._account_setup_run_completion(machine=machine, operation=operation)
@@ -3445,6 +3862,31 @@ class Simulator:
             total -= min(operation.processing_time, executed)
         return total
 
+    def _finalize_phase_snapshots(self, end_time: float) -> None:
+        """把 fixed-horizon 时刻仍在进行的装卸阶段截断写入结果。"""
+
+        for machine in self._machines.values():
+            if (
+                machine.phase_started_at is None
+                or machine.lot_id is None
+                or machine.status not in {
+                    MachineStatus.LOADING,
+                    MachineStatus.UNLOADING,
+                }
+            ):
+                continue
+            finish = max(machine.phase_started_at, end_time)
+            if finish <= machine.phase_started_at:
+                continue
+            kind = (
+                ActivityKind.LOAD
+                if machine.status is MachineStatus.LOADING
+                else ActivityKind.UNLOAD
+            )
+            self._append_phase_segment(machine, finish, kind)
+            # 已把观察窗口内的活跃段快照落入结果，避免统计阶段再次累计。
+            machine.phase_started_at = None
+
     def _build_machine_statistics(
         self,
         end_time: float,
@@ -3453,6 +3895,12 @@ class Simulator:
             machine_id: 0.0 for machine_id in self._machines
         }
         setup_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
+        load_by_machine = {
+            machine_id: 0.0 for machine_id in self._machines
+        }
+        unload_by_machine = {
             machine_id: 0.0 for machine_id in self._machines
         }
         for interval in self._processing_intervals:
@@ -3469,6 +3917,10 @@ class Simulator:
             setup_by_machine[interval.machine_id] += (
                 interval.finish - interval.start
             )
+        for interval in self._load_intervals:
+            load_by_machine[interval.machine_id] += interval.finish - interval.start
+        for interval in self._unload_intervals:
+            unload_by_machine[interval.machine_id] += interval.finish - interval.start
         for machine_id, machine in self._machines.items():
             if machine.active_batch_id is not None:
                 processing_by_machine[machine_id] += self._active_batches[
@@ -3487,6 +3939,20 @@ class Simulator:
             ):
                 setup_by_machine[machine_id] += (
                     end_time - machine.setup_started_at
+                )
+            elif (
+                machine.status is MachineStatus.LOADING
+                and machine.phase_started_at is not None
+            ):
+                load_by_machine[machine_id] += max(
+                    0.0, end_time - machine.phase_started_at
+                )
+            elif (
+                machine.status is MachineStatus.UNLOADING
+                and machine.phase_started_at is not None
+            ):
+                unload_by_machine[machine_id] += max(
+                    0.0, end_time - machine.phase_started_at
                 )
         downtime_by_machine = {
             machine_id: 0.0 for machine_id in self._machines
@@ -3526,11 +3992,15 @@ class Simulator:
                     end_time
                     - processing_by_machine[machine_id]
                     - setup_by_machine[machine_id]
+                    - load_by_machine[machine_id]
+                    - unload_by_machine[machine_id]
                     - downtime_by_machine[machine_id],
                 ),
                 final_state=machine.status.value,
                 final_setup=machine.current_setup,
                 active_batch_id=machine.active_batch_id,
+                load_time=load_by_machine[machine_id],
+                unload_time=unload_by_machine[machine_id],
                 downtime=downtime_by_machine[machine_id],
                 availability=machine.availability.value,
                 failure_count=machine.failure_count,

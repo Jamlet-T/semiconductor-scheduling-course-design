@@ -259,8 +259,17 @@ class MachineSpec:
     def __post_init__(self) -> None:
         if not self.machine_id:
             raise ValueError("machine_id 不能为空")
-        if self.load_minutes < 0 or self.unload_minutes < 0:
-            raise ValueError("load/unload time 不能为负")
+        if (
+            isinstance(self.load_minutes, bool)
+            or isinstance(self.unload_minutes, bool)
+            or not isinstance(self.load_minutes, (int, float))
+            or not isinstance(self.unload_minutes, (int, float))
+            or not isfinite(float(self.load_minutes))
+            or not isfinite(float(self.unload_minutes))
+            or self.load_minutes < 0
+            or self.unload_minutes < 0
+        ):
+            raise ValueError("load/unload time 必须为有限非负数")
         if self.setup_group == "":
             raise ValueError("setup_group 不能为空字符串")
         if self.initial_setup_run_count is not None and (
@@ -583,8 +592,38 @@ class Scenario:
                 )
         known_machines = set(machine_ids)
         operation_sources = tuple(self.lots) + tuple(self.release_templates)
+        positive_load_unload_machines = {
+            machine.machine_id
+            for machine in self.machines
+            if machine.load_minutes > 0 or machine.unload_minutes > 0
+        }
+        if any(
+            machine.cascading
+            for machine in self.machines
+            if machine.machine_id in positive_load_unload_machines
+        ):
+            raise ValueError(
+                "正 load/unload 暂不支持 cascading=True；请使用 non-cascade machine"
+            )
         for source in operation_sources:
             for operation in source.operations:
+                if (
+                    operation.part_interval_minutes is not None
+                    or operation.batch_interval_minutes is not None
+                ):
+                    raise ValueError(
+                        "PartInterval/BatchInterval 的双时点 cascade runtime 尚未实现"
+                    )
+                if (
+                    positive_load_unload_machines.intersection(operation.eligible_machines)
+                    and (
+                        operation.batch_spec is not None
+                        or operation.processing_basis == "per_batch"
+                    )
+                ):
+                    raise ValueError(
+                        "正 load/unload 暂不支持 Batch operation"
+                    )
                 unknown = set(operation.eligible_machines) - known_machines
                 if unknown:
                     raise ValueError(

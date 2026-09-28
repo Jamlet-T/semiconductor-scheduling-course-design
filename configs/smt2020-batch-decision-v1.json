@@ -9,13 +9,13 @@
       "config_id": "SMT2020_HVLM_BATCH_VALIDATION_V1",
       "version": "1.0.0",
       "model_id": "SMT2020_HVLM",
-      "manifest_hash": "997dcd178e13ca1efea758332b67615fbced60725fef5130d4941726220cf1f6"
+      "manifest_hash": "0267f0fd9a37f2dd566397f071cd2fb5e7809c6ee3cc67dab3599669c9769e49"
     },
     {
       "config_id": "SMT2020_LVHM_BATCH_VALIDATION_V1",
       "version": "1.0.0",
       "model_id": "SMT2020_LVHM",
-      "manifest_hash": "4c4dffc71acfc4104b623109d396d4c868aa3ee77d254faf93a965a7b29802e4"
+      "manifest_hash": "b2d25a937a06ac3487fae1f03ddda195ecf88e0300eeb31bc4453ab33785a052"
     }
   ]
 }

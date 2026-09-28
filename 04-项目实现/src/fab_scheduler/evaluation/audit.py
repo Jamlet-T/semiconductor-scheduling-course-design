@@ -1037,6 +1037,8 @@ def audit_result_invariants(
         accounted = (
             stats.processing_time
             + stats.setup_time
+            + stats.load_time
+            + stats.unload_time
             + stats.idle_time
             + stats.failure_downtime
             + stats.pm_downtime
@@ -1045,6 +1047,53 @@ def audit_result_invariants(
             violations.append(
                 f"{machine_id} 时间不守恒：{accounted} != {result.metrics.end_time}"
             )
+
+    # LOAD/UNLOAD 不是纯加工时间。对启用该机制的物理机，独立核对
+    # phase interval 与统计值，并验证这些占用段没有与加工/停机重叠。
+    if any(machine.load_minutes > 0 or machine.unload_minutes > 0 for machine in scenario.machines):
+        runtime = result.provenance.simulation_config.get("load_unload_runtime")
+        expected_runtime = {
+            "schema_version": "0.1.0",
+            "phase_order": ["LOAD", "PROCESS_CORE", "UNLOAD"],
+            "canonical_completion": "PROCESS_FINISH",
+            "processing_sample_point": "PROCESS_CORE_START",
+            "supported_scope": "noncascade_nonbatch",
+        }
+        if not isinstance(runtime, Mapping) or any(
+            runtime.get(key) != value for key, value in expected_runtime.items()
+        ):
+            violations.append("provenance load/unload runtime 缺失或口径不一致")
+    for machine in scenario.machines:
+        if machine.load_minutes == 0 and machine.unload_minutes == 0:
+            continue
+        machine_id = machine.machine_id
+        stats = result.machine_statistics[machine_id]
+        load = [item for item in result.load_intervals if item.machine_id == machine_id]
+        unload = [item for item in result.unload_intervals if item.machine_id == machine_id]
+        if abs(sum(item.finish - item.start for item in load) - stats.load_time) > tolerance:
+            violations.append(f"{machine_id} LOAD interval 与统计不一致")
+        if abs(sum(item.finish - item.start for item in unload) - stats.unload_time) > tolerance:
+            violations.append(f"{machine_id} UNLOAD interval 与统计不一致")
+        occupied = [
+            (item.start, item.finish, kind)
+            for kind, intervals in (
+                ("LOAD", load),
+                ("UNLOAD", unload),
+                ("PROCESS", [item for item in result.processing_intervals if item.machine_id == machine_id]),
+                ("SETUP", [item for item in result.setup_intervals if item.machine_id == machine_id]),
+                ("FAILURE", [item for item in result.downtime_intervals if item.machine_id == machine_id]),
+                ("PM", [item for item in result.pm_intervals if item.machine_id == machine_id]),
+            )
+            for item in intervals
+        ]
+        occupied.sort(key=lambda item: (item[0], item[1], item[2]))
+        previous_finish = 0.0
+        for start, finish, kind in occupied:
+            if start < -tolerance or finish < start - tolerance or finish > result.metrics.end_time + tolerance:
+                violations.append(f"{machine_id} {kind} interval 越界或时长非法")
+            if start < previous_finish - tolerance:
+                violations.append(f"{machine_id} phase/downtime interval 重叠：{kind}@{start}")
+            previous_finish = max(previous_finish, finish)
 
     batch_specs = {
         (operation.route_id, operation.step_id): operation.batch_spec

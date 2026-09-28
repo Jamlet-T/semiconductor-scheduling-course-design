@@ -2,7 +2,7 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.6`
+适用契约：Simulation Contract `0.1.7`；Data Contract `0.1.6`；Loader Contract `0.1.6`
 
 审计日期：2026-09-27
 
@@ -30,7 +30,7 @@
 | 优先级 | 数据中的 priority/hot-lot 信息 | A/B | 保存为 lot 属性，不改变硬可行性；策略不得自动读取 | loader 静态映射已验证 |
 | Release identity | `model/source row`、`LOT`、`PART`、`ORDER` | A/B | `REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>`；字段进入 immutable domain、trace、provenance | release audit 已冻结 ID/来源要求 |
 | 设备资格 | `STNFAM`、`STN`、`STNQTY` | A/B | tool group 展开到稳定物理 machine ID；动作同时满足 qualification | loader 已展开并由真实 validation slice 使用具体物理机 |
-| 加工时间 | `PDIST`、`PTIME`、`PTIME2`、`PTPER` | A | 按字段指定的分布和 per-piece/per-batch 规则计算 | constant/uniform/exponential 与三种 basis 已接入统一 runtime；cascade interval 另列 blocker |
+| 加工时间 | `PDIST`、`PTIME`、`PTIME2`、`PTPER` | A | 按字段指定的分布和 per-piece/per-batch 规则计算；non-cascade 受限链在 committed `PROCESS_START` 只抽样一次 | constant/uniform/exponential 与三种 basis 已接入统一 runtime；cascade interval 另列 blocker |
 | `uniform(m,w)` | 分布参数 | D/E | `Uniform[m-w/2, m+w/2]`，第二参数为全宽 | 原始文件不自描述；属于参考实现支持的本地规则 |
 | Setup / MINRUN | route 的 `SETUP/WHEN/STIME`、setup/setupgrp 表、tool `SETUPGRP` | A/B/D/E/F | 有向换型；严格 resolver；MINRUN 本地按成功完成的 lot 数计，初始历史缺失按可审计下界处理 | MINRUN 合成场景 runtime 已实现；与参考实现派工时扣减有意不同；真实组合仍为 blocker |
 | 初始 Setup | 无完整历史记录 | F/E | 默认空 setup，并在 provenance 中标识初始化规则 | 无法声称恢复真实历史状态 |
@@ -38,6 +38,7 @@
 | Batch 加工与兼容 | `PTPER`、`BATCHCRITF`、`BATCHPER` | A/B/E | compatibility 与加工口径按字段组合生成 BatchSpec；`B_target=raw BATCHMX/T_max=60 min` 是版本化本地选择 | raw 不提供 `B_target/T_max`；无配置仍为 blocker，配置下仅为受限决策闭环，L/U/calendar 另阻塞 |
 | CQT | `STEP`、`STEP_CQT`、`CQT`、`CQTUNITS` | A/B | source `PROCESS_FINISH` 到 target `PROCESS_START`，支持跨步 | runtime 与 loader 静态关系均验证 |
 | Dedication | `SVESTN`、`FORSTEP` | A/B | 建立后约束具体物理 machine，而非 tool group | runtime 与 loader 静态关系均验证 |
+| LOAD/PROCESS_CORE/UNLOAD | `LTIME/ULTIME`、`STNCAP`、`MachineSpec` | A/B/E | 阶段 runtime 仅限 non-cascade、non-batch；真实 loader slice 另外筛选无 Setup/sampling/rework/CQT/Dedication/interval：LOAD 与 UNLOAD 独立占用，core `PROCESS_START` 关闭 CQT，卸载后 `PROCESS_FINISH` 为 canonical completion；Failure/PM 按剩余时长恢复 | 合成 runtime（含 CQT+正 L/U）与真实 `r_3:18→19` 两模型 slice 已形成受限证据；其他合格机、日历和初始历史省略，cascade 仍 blocker |
 | 初始 Dedication | 无历史 machine | F | 不猜测绑定；记录 unknown/audit 状态 | 无法恢复真实历史绑定 |
 | 初始 CQT clock | 无 source finish 历史时间 | F | 初始 WIP 不伪造已开启时钟 | 无法恢复真实历史起点 |
 | Failure/SDT 配置 | down calendar、attach、FOA、distribution | A/B | loader 应生成 machine-level failure configuration | exponential 已接入统一 sampler；multi-calendar runtime 仍为 blocker |
@@ -48,7 +49,7 @@
 | 初始 wafer PM counter | 无设备历史计数 | F/E | 默认值必须由 scenario 显式给出并写入 provenance | 无法恢复真实历史计数 |
 | Failure/PM overlap ownership | 无充分原始业务说明 | E | 单一 downtime owner；重叠 occurrence 按 Contract 抑制/失效 | 本项目显式规则 |
 | PM 抑制 stochastic failure 后重新起算 | 无充分原始业务说明 | E | PM 结束后按实体索引流重新安排下一 occurrence | 本项目显式规则 |
-| Transport | route location 与 `fromto` | A/B/D/E | 当前主线使用外生延迟，不占运输资源；仅已配置 `Fab→Fab` 使用 `uniform(7.5,2.5)`，其余 pair 为零并显式审计 | runtime、CRN、CQT、fixed horizon 与真实 configured/missing-pair slice 已验证 |
+| Transport | route location 与 `fromto` | A/B/D/E | 当前主线使用外生延迟，不占运输资源；仅已配置 `Fab→Fab` 使用 `uniform(7.5,2.5)`，其余 pair 为零并显式审计 | runtime、CRN、CQT、fixed horizon 与真实 configured/missing-pair slice 已验证；L/U slice 仅使用 Fab→Fab |
 | Sampling | `StepPercent` | A/B/C/D/E | `None` 始终执行；显式 100% 不抽随机；`0<p<100` 在 operation entry 以稳定流判断，失败写 skip trace | runtime/initial-WIP 诊断已验证；sampled CQT targets 4/18 全为 p100，stochastic endpoint=0，sampling blocker 已关闭；load/unload 另列 blocker |
 | Rework | `RWKSTEP/REWORK/RWKTYPE` | A/B/C/D | raw 为 lot scope 并回到更早 step；不得在证据不足时假定每 visit 或仅一次触发 | 字段组与回跳引用已静态验证；参考实现是每 lot/source 最多一次，现 Data Contract 未冻结本地选择，runtime 未实现 |
 
@@ -66,7 +67,7 @@
 
 ## 5. Loader 实测更新
 
-Loader Contract `0.1.5` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
+Loader Contract `0.1.6` 已在真实 HVLM/LVHM 上完成静态映射与受限 runtime validation slice。以下结论由实际 parser、runtime 和引用证据支持：
 
 - Product/Route/Operation、STNFAM→具体 machine、Setup transition/group、Batch wafer bounds、CQT、Dedication、Failure/PM calendar/attach、Transport、ReleaseTemplate 和 Initial WIP 已进入 `SMT2020StaticModel`；
 - raw route row 与 parsed operation 逐行 reconciliation，跨文件引用没有 ERROR；
@@ -78,6 +79,7 @@ Loader Contract `0.1.5` 已在真实 HVLM/LVHM 上完成静态映射与受限 ru
 - 全部显式 sampled 工序（221/955）都使用带 `LOAD=1 min / UNLOAD=1 min` 的 tool template，诊断 slice 未执行这两段时长；因此它不是物理 duration 闭环；
 - raw sampled CQT target 为 HVLM 4、LVHM 18，逐条均为 p100，stochastic endpoint 为 0；p100 不存在 skip 分支，sampling blocker 关闭；未来 p<100 endpoint 仍显式 unsupported；
 - batch v1 config 显式绑定两模型 manifest，并将 E 级 `raw BATCHMX/60 min` 与 canonical hash 写入 provenance；HVLM target、LVHM timeout 两条真实 initial-WIP slice 通过 per-batch CRN 和结果不变量审计，load/unload/calendar 省略仍有 warning；
-- static mapping 不等于完整 runtime closure。显式 v1 batch 配置下 rework、load/unload/cascade、setup MINRUN 与 multi-calendar 仍构成 Data Integration 的 4 类 blocker；无配置默认 audit 另有 batch 参数 blocker。
+- non-cascade、non-batch 的真实 L/U slice 固定为两模型 `r_3:18→19`、指定 initial WIP 和每道首台合格物理机，保留 1 min LOAD/UNLOAD 与 Fab→Fab transport；其他合格机、Failure/PM attachment 和初始历史显式写入 provenance 并省略；
+- static mapping 不等于完整 runtime closure。受限 L/U 子链通过不等于 cascade 语义关闭；显式 v1 batch 配置下 rework、load/unload/cascade、setup MINRUN 与 multi-calendar 仍构成 Data Integration 的 4 类 blocker；无配置默认 audit 另有 batch 参数 blocker。
 
 完整判定见 `smt2020-data-integration-gate.md`。

@@ -1,8 +1,8 @@
 # SMT2020 Loader Contract
 
-版本：`0.1.5`
-Loader：`fab_scheduler.data.load_smt2020` / `0.1.5`
-状态：静态数据链与加工/搬运/release/batch 受限 validation slice、sampling 判定诊断 slice 已实现；完整可执行 Scenario 尚有 blocker
+版本：`0.1.6`
+Loader：`fab_scheduler.data.load_smt2020` / `0.1.6`
+状态：静态数据链与加工/搬运/release/batch/load-unload 受限 validation slice、sampling 判定诊断 slice 已实现；完整可执行 Scenario 尚有 blocker
 
 ## 1. 边界
 
@@ -40,7 +40,7 @@ relative_path + size_bytes + SHA-256
 | `tool.STNGRP/STNFAMLOC` | — | machine group/location | downtime attachment 与 transport location | A |
 | `PDIST/PTIME/PTIME2/PTUNITS` | min | `DistributionDefinition → TimeDistributionSpec` | 单位转分钟；uniform 保存 mean/full-width；commit 后统一 sampler 抽样 | A+D |
 | `PTPER` | lot/piece/batch | `processing_basis` | 原值保留，不用均值伪装 runtime | A |
-| `LTIME/ULTIME` | time | machine template | 单位转分钟 | A |
+| `LTIME/ULTIME` | time | machine template | 单位转分钟；non-cascade 受限子链进入独立 LOAD/UNLOAD phase；cascade 双时点仍 blocker | A |
 | `STNCAP/PartInterval/BatchInterval` | time | cascading metadata | 单位转分钟；当前 runtime blocker | A |
 | `BATCHMN/BATCHMX` | wafer | operation batch bounds | 必须 `min<=max` 且 `PTPER=per_batch` | A+B |
 | `BATCHCRITF/BATCHPER` | — | machine template | 当前真实值 `crit_sameroutestep/piece` | A |
@@ -95,6 +95,10 @@ release 为惰性事件生成，`DUE-START` 随每个 release 平移；`ORDER/HO
 
 batch slice 从真实 initial WIP 当前工序选择达到 `BATCHMN` 的同 route/step 组，可用 `validation_batch_operation=(route_id, step_id)` 精确选择。仅接受无 setup、cascade、sampling、rework、CQT/Dedication endpoint 的 per-batch 工序；BatchSpec 的 `BATCHMN/BATCHMX` 和加工分布来自 raw，`BATCHCRITF=crit_sameroutestep` 与 `BATCHPER=piece` 对所有合格机显式校验，其他值报 ERROR、不依赖默认规则。lot 的数量、产品、订单、source row、交期等来自真实 WIP。该 slice 只选一台合格物理机，**省略**其他合格机、真实工具的 load/unload 和 calendar attachment，以 `DI_BATCH_SLICE_SINGLE_MACHINE`、`DI_BATCH_SLICE_OMITS_LOAD_UNLOAD`、`DI_BATCH_SLICE_OMITS_CALENDAR_ATTACHMENTS` 与 provenance 明示；它验证组批决策、per-batch 一次物理抽样和数据映射，不验证完整物理占用、资源竞争或故障/PM 组合。
 
+`LoaderConfig(mode="load_unload_validation_slice")` 是真实 non-cascade、non-batch 两工序诊断 slice，固定选择各模型 `r_3:18→19`、`part_3` 的指定 initial WIP（HVLM `Init_Lot_3_1361`，LVHM `Init_Lot_3_290`），两道工序分别使用首台真实合格 non-cascade 物理机 `DE_FE_1#0001`、`DE_FE_86#0001`。selector 要求 `per_lot`、`Fab`、无 setup/batch/sampling/rework/CQT/Dedication、无 `PartInterval/BatchInterval`，并保留 raw `LOAD=1 min / UNLOAD=1 min` 与 `Fab→Fab` 外生 transport。Scenario 只包含该一 lot、两道工序和每道一台 machine；其他合格机、所选机的 Failure/calendar PM/wafer PM attachment、初始 setup/PM counter/CQT/dedication 历史均不装配或不伪造，具体省略项及 source row 进入 provenance，并产生独立 WARNING。
+
+该 slice 只证明 `LOAD → PROCESS_CORE → UNLOAD → PROCESS_FINISH` 的受限链和 raw→Scenario 映射：`PROCESS_START` 在 core 开始、processing sample 只抽一次，Failure/PM 组合在合成 runtime 有 preemptive-resume 证据，fixed-horizon 支持阶段截断。它不验证其他资格机竞争、Failure/PM 日历组合、初始历史、Batch、Setup/MINRUN、rework 或 cascade，不能关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`，也不生成正式 KPI 或策略结论。
+
 当前 raw 共有 HVLM/LVHM 显式 StepPercent `221/955` 条，其中随机百分比 `149/662`、100% `72/293`；位于 initial WIP 当前 step 的 lot 数为 `98/75`，与 rework 重叠的 operation 为 `14/52`。sampled CQT target 为 `4/18`，逐条均为 p=100，stochastic sampled CQT target 为 `0/0`；因此实际 raw sampling profile 全部可由上述 runtime 表达，loader 将 `DI_UNSUPPORTED_SAMPLING` 替换为支持性 INFO。两模型全部显式 sampled 工序所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`，而 sampling slice 未执行 load/unload。loader 为此产生 `DI_SAMPLING_SLICE_OMITS_LOAD_UNLOAD` warning，并把省略分钟数写入 selector provenance；该 slice 不能关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`。
 
 该 slice 验证：
@@ -115,6 +119,8 @@ raw parser → static model → Scenario schema → simulate() → provenance
 只有 `BLOCKER count == 0` 才允许 Data Integration Gate 通过。
 
 ## 8. 版本记录
+
+- `0.1.6`：增加真实 `load_unload_validation_slice`，冻结两模型 `r_3:18→19` 的 non-cascade、non-batch 选择边界、独立 LOAD/UNLOAD provenance 与省略项审计；该 slice 不关闭 cascade、MINRUN、rework、multi-calendar 或 Gate blocker。
 
 - `0.1.5`：增加显式、manifest 绑定的 `BatchDecisionConfig`、`batch_validation_slice` 与 real initial-WIP 组批诊断；缺配置/不匹配继续阻塞或报 ERROR，load/unload 和 calendar 省略单列 warning/provenance。此变更不修改 MC04 物理规则，也不授权正式 HVLM/LVHM 策略实验。
 - `0.1.4`：增加 `sampling_validation_slice` 和精确 selector；将 `StepPercent` 映射到 immutable `OperationSpec`，冻结 None/100%/随机百分比、operation-entry skip、initial-WIP `t=0`、稳定 sampling identity 与 provenance；核实真实 sampled CQT target 全为 p=100 后关闭 sampling blocker。真实 sampled 工序的 load/unload 未执行，slice 仍只作判定/映射诊断，load/unload blocker 保留。

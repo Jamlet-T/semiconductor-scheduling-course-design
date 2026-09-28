@@ -27,8 +27,8 @@ from fab_scheduler.domain.models import (
 )
 
 
-SMT2020_LOADER_VERSION = "0.1.5"
-SMT2020_LOADER_CONTRACT_VERSION = "0.1.5"
+SMT2020_LOADER_VERSION = "0.1.6"
+SMT2020_LOADER_CONTRACT_VERSION = "0.1.6"
 Severity = Literal["ERROR", "BLOCKER", "WARNING", "INFO"]
 
 
@@ -351,7 +351,7 @@ class LoaderConfig:
     mode: Literal[
         "audit", "validation_slice", "transport_validation_slice",
         "release_validation_slice", "sampling_validation_slice",
-        "batch_validation_slice",
+        "batch_validation_slice", "load_unload_validation_slice",
     ] = "audit"
     validation_product_id: str | None = None
     validation_transport_pair: tuple[str, str] | None = None
@@ -364,7 +364,7 @@ class LoaderConfig:
         if self.mode not in {
             "audit", "validation_slice", "transport_validation_slice",
             "release_validation_slice", "sampling_validation_slice",
-            "batch_validation_slice",
+            "batch_validation_slice", "load_unload_validation_slice",
         }:
             raise ValueError(f"不支持的 loader mode：{self.mode}")
         if self.mode == "audit" and (
@@ -1496,6 +1496,8 @@ def load_smt2020(
         scenario = _build_sampling_validation_slice(static_model, manifest, config)
     elif config.mode == "batch_validation_slice" and batch_config_matches:
         scenario = _build_batch_validation_slice(static_model, manifest, config)
+    elif config.mode == "load_unload_validation_slice":
+        scenario = _build_load_unload_validation_slice(static_model, manifest, config)
     else:
         scenario = None
     if config.mode == "batch_validation_slice" and scenario is not None:
@@ -1520,6 +1522,66 @@ def load_smt2020(
                 machine_id=selected_machine_id,
                 **omitted_calendars,
             )
+    if config.mode == "load_unload_validation_slice" and scenario is not None:
+        slice_items = dict(scenario.dataset_provenance.loader_config)
+        selected_ids = tuple(
+            item
+            for item in slice_items.get(
+                "load_unload_slice_selected_machine_ids", ""
+            ).split(",")
+            if item
+        )
+        omitted_ids = tuple(
+            item
+            for item in slice_items.get(
+                "load_unload_slice_omitted_machine_ids", ""
+            ).split(",")
+            if item
+        )
+        note(
+            "WARNING",
+            "DI_LOAD_UNLOAD_SLICE_SINGLE_MACHINE",
+            "load/unload validation slice 每道工序只选一台具体真实合格机；其他资格机不进入 Scenario",
+            selected_machine_ids=selected_ids,
+            omitted_machine_count=len(omitted_ids),
+        )
+        note(
+            "WARNING",
+            "DI_LOAD_UNLOAD_SLICE_OMITS_CALENDAR_ATTACHMENTS",
+            "load/unload validation slice 不装配所选物理机的 Failure/calendar PM/wafer PM；原始 attachment 与 ID 已进入 provenance",
+            failure_calendars=slice_items.get(
+                "load_unload_slice_omitted_failure_calendar_ids", ""
+            ),
+            calendar_pm=slice_items.get(
+                "load_unload_slice_omitted_calendar_pm_ids", ""
+            ),
+            wafer_pm=slice_items.get(
+                "load_unload_slice_omitted_wafer_pm_ids", ""
+            ),
+        )
+        note(
+            "WARNING",
+            "DI_LOAD_UNLOAD_SLICE_INITIAL_HISTORY_UNKNOWN",
+            "slice 不伪造初始 setup、wafer-PM counter 或历史 CQT/dedication 状态；当前 WIP 原始元数据已保留",
+            initial_setup=slice_items.get(
+                "load_unload_slice_omitted_initial_setup", "unknown"
+            ),
+            wafer_pm_counter=slice_items.get(
+                "load_unload_slice_omitted_wafer_pm_initial_counter", ""
+            ),
+            unknown_cqt=slice_items.get(
+                "load_unload_slice_initial_unknown_cqt_relationships", "0"
+            ),
+            unknown_dedication=slice_items.get(
+                "load_unload_slice_initial_unknown_dedication_relationships", "0"
+            ),
+        )
+        note(
+            "INFO",
+            "DI_LOAD_UNLOAD_SLICE_PROFILE_RESTRICTED",
+            "slice 仅接受 per_lot、无 setup/batch/sampling/rework/CQT/dedication 的 non-cascade 两工序 profile",
+            profile=slice_items.get("load_unload_slice_profile_constraints", ""),
+        )
     evidence = (
         SemanticEvidence("entity-fields", "A", "raw SMT2020 tables", "字段和值直接读取"),
         SemanticEvidence("qualification", "B", "route.STNFAM + tool.STNFAM/STNQTY", "推导具体物理机资格集合"),
@@ -1547,6 +1609,12 @@ def load_smt2020(
             "A/B/E",
             "raw BATCHMN/BATCHMX + real initial WIP + explicit versioned BatchDecisionConfig",
             "B_target=raw BATCHMX 与 T_max 为显式本地假设；受限 slice 不包含 LOAD/UNLOAD 和 calendar",
+        ),
+        SemanticEvidence(
+            "load-unload-validation-runtime",
+            "A/B/D/E",
+            "real initial WIP + route_3 + tool.txt.1l + fromto.txt + local contract",
+            "仅保留 r_3:18→19、指定真实 WIP 和各自首台合格机；保留真实 1 min LOAD/UNLOAD 与 Fab→Fab 外生 transport，其余资格机、Failure/PM 和历史状态显式省略并进入 provenance",
         ),
         SemanticEvidence("initial-state-fallbacks", "E/F", "project contract + absent raw history", "显式假设并保留 unknown audit"),
     )
@@ -1784,6 +1852,306 @@ def _build_validation_slice(model: SMT2020StaticModel, manifest: DatasetManifest
         machines=(MachineSpec(machine_id),),
         lots=(LotSpec(f"VALIDATION-{product_by_route[op.route_id].product_id}", 0, (OperationSpec(1, duration, (machine_id,), route_id=op.route_id, tool_group_id=op.tool_family_id, processing_distribution=distribution, processing_basis=op.processing_basis),), quantity_wafers=25),),
         termination_mode="fixed_horizon", horizon=duration + distribution.width_minutes / 2 + 1,
+        dataset_provenance=provenance,
+    )
+
+
+def _build_load_unload_validation_slice(
+    model: SMT2020StaticModel,
+    manifest: DatasetManifest,
+    config: LoaderConfig,
+) -> Scenario:
+    """构造真实 LOAD/UNLOAD 的两工序最小闭包验证 slice。
+
+    这是一个有意受限的诊断场景，不是 HVLM/LVHM 全量实验：只选 ``r_3`` 的
+    18→19 两道连续工序和指定的真实 initial WIP，并为每道工序选取一台具体
+    合格机。与其它 validation slice 不同，所选 MachineSpec 保留 raw 的
+    LOAD=UNLOAD=1 min；其余合格机、calendar、历史状态和组合 profile 都不
+    进入 Scenario，但会写入 provenance，避免把省略误读成数据不存在。
+    """
+
+    target_lot_by_model = {
+        "SMT2020_HVLM": "Init_Lot_3_1361",
+        "SMT2020_LVHM": "Init_Lot_3_290",
+    }
+    target_lot_id = target_lot_by_model.get(manifest.model_name)
+    if target_lot_id is None:
+        raise ValueError(
+            "load_unload_validation_slice 仅支持 SMT2020_HVLM/SMT2020_LVHM"
+        )
+
+    product = next(
+        (item for item in model.products if item.route_id == "r_3"),
+        None,
+    )
+    route = next((item for item in model.routes if item.route_id == "r_3"), None)
+    if product is None or route is None:
+        raise ValueError("找不到 load/unload slice 所需的真实 r_3 产品/路线")
+    if product.product_id != "part_3":
+        raise ValueError("r_3 的真实产品不是 part_3，拒绝隐式替换 slice")
+
+    operation_by_step = {operation.step_id: operation for operation in route.operations}
+    try:
+        operations = (operation_by_step[18], operation_by_step[19])
+    except KeyError as exc:
+        raise ValueError("真实 r_3 缺少连续的 18→19 工序") from exc
+    if operations[1].step_id != operations[0].step_id + 1:
+        raise ValueError("load/unload slice 要求 r_3:18→r_3:19 连续")
+    expected_families = ("DE_FE_1", "DE_FE_86")
+    if tuple(operation.tool_family_id for operation in operations) != expected_families:
+        raise ValueError(
+            "r_3:18→r_3:19 的真实 tool family 不是 DE_FE_1→DE_FE_86"
+        )
+
+    location_by_machine = {
+        machine_id: template.location_id
+        for template in model.machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+    template_by_machine = {
+        machine_id: template
+        for template in model.machine_templates
+        for machine_id in template.resource_instance_ids
+    }
+    selected_machine_ids: list[str] = []
+    selected_templates: list[MachineTemplateDefinition] = []
+    for operation in operations:
+        if (
+            operation.processing_basis != "per_lot"
+            or operation.required_setup is not None
+            or operation.setup_override_minutes is not None
+            or operation.batch_min_wafers is not None
+            or operation.batch_max_wafers is not None
+            or operation.sample_percent is not None
+            or operation.rework_step_id is not None
+            or operation.cqt_target_step_id is not None
+            or operation.dedication_target_step_id is not None
+            or operation.batch_interval_minutes is not None
+            or operation.part_interval_minutes is not None
+        ):
+            raise ValueError(
+                f"真实 {operation.route_id}:{operation.step_id} 超出 non-cascade per_lot profile"
+            )
+        eligible = tuple(
+            machine_id
+            for machine_id in operation.eligible_machine_ids
+            if location_by_machine.get(machine_id) == "Fab"
+            and not template_by_machine[machine_id].cascading
+        )
+        if not eligible:
+            raise ValueError(
+                f"真实 {operation.route_id}:{operation.step_id} 没有 Fab non-cascade 合格机"
+            )
+        machine_id = eligible[0]
+        template = template_by_machine[machine_id]
+        if (template.load_minutes, template.unload_minutes) != (1.0, 1.0):
+            raise ValueError(
+                f"真实 {machine_id} 的 LOAD/UNLOAD 不是 1/1 min："
+                f"{template.load_minutes}/{template.unload_minutes}"
+            )
+        selected_machine_ids.append(machine_id)
+        selected_templates.append(template)
+
+    matching_wip = tuple(
+        item
+        for item in model.initial_wip
+        if item.lot_id == target_lot_id
+        and item.product_id == product.product_id
+        and item.current_step_id == 18
+    )
+    if len(matching_wip) != 1:
+        raise ValueError(
+            "找不到唯一的指定真实 initial WIP："
+            f"{target_lot_id}（要求 part_3/current_step=18）"
+        )
+    wip = matching_wip[0]
+
+    selected_set = set(selected_machine_ids)
+    omitted_machine_ids = tuple(
+        sorted(
+            machine_id
+            for operation in operations
+            for machine_id in operation.eligible_machine_ids
+            if machine_id not in selected_set
+        )
+    )
+    if len(omitted_machine_ids) != len(set(omitted_machine_ids)):
+        omitted_machine_ids = tuple(sorted(set(omitted_machine_ids)))
+
+    # Attachments are expanded exactly as the audit path does: one raw attach
+    # row may select a station family or a station group. They are deliberately
+    # not mounted on the selected MachineSpecs in this validation slice.
+    pm_by_id = {item.calendar_id: item for item in model.pm_calendars}
+    omitted_failure_ids: set[str] = set()
+    omitted_calendar_pm_ids: set[str] = set()
+    omitted_wafer_pm_ids: set[str] = set()
+    for machine_id, template in zip(selected_machine_ids, selected_templates, strict=True):
+        for attachment in model.calendar_attachments:
+            matches_machine = (
+                attachment.resource_type == "stnfam"
+                and attachment.resource_name == template.tool_family_id
+            ) or (
+                attachment.resource_type == "stngrp"
+                and attachment.resource_name == template.group_id
+            )
+            if not matches_machine:
+                continue
+            if attachment.calendar_kind == "down":
+                omitted_failure_ids.add(attachment.calendar_id)
+            elif attachment.calendar_kind == "pm":
+                calendar = pm_by_id.get(attachment.calendar_id)
+                if calendar is not None and calendar.wafer_threshold is not None:
+                    omitted_wafer_pm_ids.add(attachment.calendar_id)
+                else:
+                    omitted_calendar_pm_ids.add(attachment.calendar_id)
+
+    relevant_transport = tuple(
+        item for item in model.transport
+        if item.from_location == "Fab" and item.to_location == "Fab"
+    )
+    if not relevant_transport:
+        raise ValueError("真实 fromto.txt 缺少 Fab→Fab transport")
+    transport_specs = tuple(
+        TransportSpec(
+            item.from_location,
+            item.to_location,
+            to_runtime_distribution(item.duration),
+        )
+        for item in relevant_transport
+    )
+    if len({(item.from_location, item.to_location) for item in transport_specs}) != len(transport_specs):
+        raise ValueError("Fab→Fab transport pair 重复，无法构造唯一 Scenario")
+
+    all_operations = tuple(item for item in route.operations)
+    unknown_cqt = sum(
+        operation.step_id < wip.current_step_id <= (operation.cqt_target_step_id or -1)
+        for operation in all_operations
+    )
+    unknown_dedication = sum(
+        operation.step_id < wip.current_step_id <= (operation.dedication_target_step_id or -1)
+        for operation in all_operations
+    )
+    processing_distributions = tuple(
+        to_runtime_distribution(operation.processing) for operation in operations
+    )
+    runtime_operations = tuple(
+        OperationSpec(
+            operation.step_id,
+            distribution.mean_minutes,
+            (machine_id,),
+            route_id=operation.route_id,
+            tool_group_id=operation.tool_family_id,
+            processing_distribution=distribution,
+            processing_basis=operation.processing_basis,
+        )
+        for operation, machine_id, distribution in zip(
+            operations, selected_machine_ids, processing_distributions, strict=True
+        )
+    )
+    lot = LotSpec(
+        wip.lot_id,
+        0.0,
+        runtime_operations,
+        quantity_wafers=wip.quantity_wafers,
+        due_time=wip.due_minutes,
+        priority=wip.priority,
+        is_initial_wip=True,
+        initial_operation_index=0,
+        product_id=wip.product_id,
+        order_id=wip.order_id,
+        hot_lot=wip.hot_lot,
+        source_row=wip.source_row,
+    )
+    machines = tuple(
+        MachineSpec(
+            machine_id,
+            load_minutes=template.load_minutes,
+            unload_minutes=template.unload_minutes,
+            cascading=template.cascading,
+            location_id=template.location_id,
+            setup_group=template.setup_group,
+        )
+        for machine_id, template in zip(selected_machine_ids, selected_templates, strict=True)
+    )
+    transport_upper = max(
+        item.duration.mean_minutes + item.duration.width_minutes / 2
+        for item in transport_specs
+    )
+    horizon = (
+        sum(
+            distribution.mean_minutes + distribution.width_minutes / 2
+            for distribution in processing_distributions
+        )
+        + sum(template.load_minutes + template.unload_minutes for template in selected_templates)
+        + transport_upper
+        + 1
+    )
+    provenance_items = config.provenance_items() + (
+        ("load_unload_slice_model", manifest.model_name),
+        ("load_unload_slice_route", "r_3"),
+        ("load_unload_slice_steps", "18->19"),
+        ("load_unload_slice_lot_id", wip.lot_id),
+        ("load_unload_slice_wip_product_id", wip.product_id),
+        ("load_unload_slice_wip_current_step", str(wip.current_step_id)),
+        ("load_unload_slice_wip_quantity_wafers", str(wip.quantity_wafers)),
+        ("load_unload_slice_wip_due_minutes", str(wip.due_minutes)),
+        ("load_unload_slice_wip_priority", str(wip.priority)),
+        ("load_unload_slice_wip_order_id", wip.order_id),
+        ("load_unload_slice_wip_hot_lot", str(wip.hot_lot)),
+        ("load_unload_slice_wip_source_start_minutes", str(wip.source_start_minutes)),
+        ("load_unload_slice_wip_source_trace", wip.source_trace or ""),
+        ("load_unload_slice_wip_source_row", str(wip.source_row)),
+        ("load_unload_slice_selected_machine_ids", ",".join(selected_machine_ids)),
+        ("load_unload_slice_selected_tool_families", "DE_FE_1,DE_FE_86"),
+        ("load_unload_slice_raw_eligible_machine_counts", ";".join(
+            f"{operation.tool_family_id}:{len(operation.eligible_machine_ids)}"
+            for operation in operations
+        )),
+        ("load_unload_slice_omitted_machine_ids", ",".join(omitted_machine_ids)),
+        ("load_unload_slice_raw_load_minutes", ";".join(
+            f"{operation.tool_family_id}:1.0" for operation in operations
+        )),
+        ("load_unload_slice_raw_unload_minutes", ";".join(
+            f"{operation.tool_family_id}:1.0" for operation in operations
+        )),
+        ("load_unload_slice_transport_pairs", "Fab->Fab"),
+        ("load_unload_slice_omitted_failure_calendar_ids", ",".join(sorted(omitted_failure_ids))),
+        ("load_unload_slice_omitted_calendar_pm_ids", ",".join(sorted(omitted_calendar_pm_ids))),
+        ("load_unload_slice_omitted_wafer_pm_ids", ",".join(sorted(omitted_wafer_pm_ids))),
+        ("load_unload_slice_omitted_wafer_pm_initial_counter", "unknown; runtime fallback=0"),
+        ("load_unload_slice_omitted_initial_setup", "unknown"),
+        ("load_unload_slice_initial_unknown_cqt_relationships", str(unknown_cqt)),
+        ("load_unload_slice_initial_unknown_dedication_relationships", str(unknown_dedication)),
+        (
+            "load_unload_slice_profile_constraints",
+            "processing_basis=per_lot;setup=None;batch=None;sampling=None;"
+            "rework=None;cqt=None;dedication=None;cascading=False",
+        ),
+    )
+    provenance = DatasetProvenanceSpec(
+        manifest.dataset_family,
+        manifest.model_name,
+        manifest.manifest_hash,
+        manifest.parser_schema_version,
+        manifest.loader_version,
+        SMT2020_LOADER_CONTRACT_VERSION,
+        provenance_items,
+        tuple(
+            SourceFileProvenance(item.relative_path, item.size_bytes, item.sha256)
+            for item in manifest.files
+        ),
+    )
+    return Scenario(
+        scenario_id=(
+            f"{manifest.model_name}:load-unload-validation-slice:"
+            f"r_3:18-19:{wip.lot_id}"
+        ),
+        dataset_version=manifest.dataset_version,
+        machines=machines,
+        lots=(lot,),
+        termination_mode="fixed_horizon",
+        horizon=horizon,
+        transport_specs=transport_specs,
         dataset_provenance=provenance,
     )
 

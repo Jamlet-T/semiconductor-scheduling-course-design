@@ -1,12 +1,27 @@
 # SMT2020 Load / Unload / Cascade 语义审计
 
-审计日期：2026-09-27。范围为当前仓库的 HVLM/LVHM 原始表、Data Contract §3–4、固定 PySCFabSim commit `0dbff6a55c30978aa7d61d4cbd42cbf550c48e9a` 与现有 DES；这是静态证据审计，**不是 runtime closure**。
+审计日期：2026-09-27。范围为当前仓库的 HVLM/LVHM 原始表、Data Contract §3–4、固定 PySCFabSim commit `0dbff6a55c30978aa7d61d4cbd42cbf550c48e9a` 与现有 DES；本文保留级联静态证据审计边界，并引用另行记录的 non-cascade、non-batch 受限 runtime 结果，**不是完整 cascade runtime closure**。
 
 ## 决策
 
-`DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保持 **OPEN / BLOCKER**，Data Integration Gate 保持 `not_passed_gaps`。当前 loader 保存 `LTIME/ULTIME/STNCAP/PartInterval/BatchInterval`，但受限 Scenario 有意省略 load/unload，DES 也没有独立的 lot 完成和 machine 释放时钟。不能把能解析字段或运行单工序 sampling slice 等同于完整物理兼容。
+`DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保持 **OPEN / BLOCKER**，Data Integration Gate 保持 `not_passed_gaps`。当前 loader 保存 `LTIME/ULTIME/STNCAP/PartInterval/BatchInterval`；受限 Scenario 已能表达 non-cascade、non-batch 的独立 LOAD/UNLOAD phase 和 canonical `PROCESS_FINISH`，但尚未表达 cascade 所需的 lot 完成与 machine 释放双时点。不能把受限 phase runtime 或单工序 sampling slice 等同于完整物理兼容。
 
-下一步先实现并验收真实 **non-cascade load/unload** 的受限子链；即使该子链通过，也只可标记 `PASS-limited`，不能关闭整个 blocker。级联所需的尾段所有权、故障/PM 中断、同刻事件次序及指标审计另行冻结和实现。
+真实 **non-cascade、non-batch load/unload** 的受限子链已经在合成 micro case 和两模型 `r_3:18→19` slice 中形成 `PASS-limited` 证据，但不能关闭整个 blocker。级联所需的尾段所有权、Part/BatchInterval、真实 MINRUN 组合、rework、多 calendar、故障/PM 组合、同刻事件次序及指标审计仍待另行冻结和验收。
+
+## 当前受限 runtime 更新（不关闭 blocker）
+
+`Simulation Contract 0.1.7` 仅冻结 non-cascade、non-batch、非 `per_batch` 且无 Part/BatchInterval 的阶段子链；真实 loader slice 为最小可审计闭包，另外筛选无 Setup/sampling/rework/CQT/Dedication：
+
+```text
+LOAD_START → LOAD_FINISH
+→ PROCESS_START（core 开始；不另发 `PROCESS_CORE_START` trace） → PROCESS_CORE_FINISH
+→ UNLOAD_START → UNLOAD_FINISH
+→ PROCESS_FINISH (canonical completion)
+```
+
+`PROCESS_START` 在 core 开始并关闭目标 CQT；加工随机 realization 在 committed core start 后只抽样一次。LOAD/UNLOAD 写入独立 intervals 和 machine statistics，不并入纯 processing；Failure/PM 可以抢占三个阶段并按 remaining duration 恢复，stale completion 由 activity token 失效；fixed-horizon 对 `H` 时刻仍活动的阶段写入截断快照，lot 未到 `PROCESS_FINISH` 不算完成。该边界及审计字段见 [受限 runtime 审计](smt2020-load-unload-runtime-audit.md)。
+
+真实 slice 固定使用 HVLM `Init_Lot_3_1361`、LVHM `Init_Lot_3_290`，两者均为 `part_3`、`r_3:18→19`；每道工序选择 `DE_FE_1#0001`/`DE_FE_86#0001`，保留 raw `LOAD=1 min / UNLOAD=1 min` 和 `Fab→Fab` 外生 transport。其他合格机、Failure/calendar PM/wafer PM attachments、initial setup/PM counter、历史 CQT/dedication 状态不进入 Scenario，均通过 warning/provenance 显式记录。该 slice 不代表全量 HVLM/LVHM 可执行，不作正式 KPI/策略比较。
 
 ## Non-cascade 子链候选与契约边界
 
@@ -16,7 +31,7 @@
 
 这两台真实工具仍挂有 Failure 和多条 wafer PM；真实 initial WIP 的历史 PM counter 也不可恢复。若先构造单/双工序验证 slice，必须在 audit/provenance 中逐项说明日历、其他合格机和历史状态的省略。该 slice 即使通过，也只能证明 non-cascade 子链；不能关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`。
 
-设计时还必须维持当前 Contract 的有效 `PROCESS_FINISH` 业务口径：MINRUN 成功 lot 计数、CQT source 开钟、Dedication target 释放、wafer-PM 完成计数和路线推进均绑定它。不能把它无声改名为“纯加工阶段结束”。non-cascade 可新增 `LOAD/PROCESS_CORE/UNLOAD` 的阶段状态和事件，并在卸载结束后触发原有 canonical `PROCESS_FINISH`；真正的 lot 完成与 machine 释放双时点仍仅属于待冻结的 cascade 语义。加工随机 realization 继续在实际进入加工阶段、已提交动作之后按稳定 identity 抽样一次，中断恢复不得重抽样。此段是下一版最小实现的契约边界说明，不表示 runtime 已实现。
+设计时还必须维持当前 Contract 的有效 `PROCESS_FINISH` 业务口径：MINRUN 成功 lot 计数、CQT source 开钟、Dedication target 释放、wafer-PM 完成计数和路线推进均绑定它。不能把它无声改名为“纯加工阶段结束”。non-cascade 子链在卸载结束后触发原有 canonical `PROCESS_FINISH`；真正的 lot 完成与 machine 释放双时点仍仅属于待冻结的 cascade 语义。加工随机 realization 在实际进入 core、已提交动作之后按稳定 identity 抽样一次，中断恢复不得重抽样。完整级联仍不应从该受限子链外推。
 
 ## 原始数据与现有公式
 

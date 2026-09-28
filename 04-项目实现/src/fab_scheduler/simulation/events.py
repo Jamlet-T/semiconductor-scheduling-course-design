@@ -8,7 +8,7 @@ from typing import Any
 
 
 class EventPriority(IntEnum):
-    """Simulation Contract 0.1.6 的同刻事件优先级（排序数值未变）。"""
+    """Simulation Contract 0.1.7 的同刻事件优先级（排序数值未变）。"""
 
     PROCESS_FINISH = 10
     REPAIR_FINISH = 20
@@ -25,6 +25,9 @@ class EventType(str, Enum):
     REPAIR_FINISH = "REPAIR_FINISH"
     FAILURE_START = "FAILURE_START"
     PROCESS_FINISH = "PROCESS_FINISH"
+    LOAD_FINISH = "LOAD_FINISH"
+    PROCESS_CORE_FINISH = "PROCESS_CORE_FINISH"
+    UNLOAD_FINISH = "UNLOAD_FINISH"
     BATCH_FINISH = "BATCH_FINISH"
     SETUP_FINISH = "SETUP_FINISH"
     TRANSPORT_ARRIVE = "TRANSPORT_ARRIVE"
@@ -39,6 +42,9 @@ EVENT_PRIORITIES = {
     EventType.REPAIR_FINISH: EventPriority.REPAIR_FINISH,
     EventType.FAILURE_START: EventPriority.FAILURE_START,
     EventType.PROCESS_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.LOAD_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.PROCESS_CORE_FINISH: EventPriority.PROCESS_FINISH,
+    EventType.UNLOAD_FINISH: EventPriority.PROCESS_FINISH,
     EventType.BATCH_FINISH: EventPriority.PROCESS_FINISH,
     EventType.SETUP_FINISH: EventPriority.PROCESS_FINISH,
     EventType.TRANSPORT_ARRIVE: EventPriority.PROCESS_FINISH,

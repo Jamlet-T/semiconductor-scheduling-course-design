@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.6`
+版本：`0.1.7`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -66,7 +66,7 @@ objective = evaluate(metrics)
 | Lot 投放 | FROZEN | `START` 转换为仿真零点后的释放时刻；重复订单按 `RDIST/REPEAT/RUNITS` 惰性生成；每个重复 lot 继承 `DUE-START` 的相对交期；SMT2020 真实支持边界见本节后的 release profile |
 | 首工序入队 | FROZEN | release 后直接进入首工序队列；首工序前不增加搬运 |
 | 路线推进 | FROZEN | 工序由 `(route_id, step_id, visit_index)` 唯一标识；物理执行的工序只由加工完成事件推进，显式 sampling 跳步由本节的独立决定/trace 推进 |
-| 工序完成 | FROZEN | 加工及约定的卸载活动完成后记为完成；随后 lot 进入运输或完成状态 |
+| 工序完成 | FROZEN | 对 non-cascade、non-batch 受限子链，`PROCESS_FINISH` 在 core 加工和卸载均完成后作为 canonical 完成边界；随后 lot 进入运输或完成状态；cascade 仍为 blocker |
 | 设备资格 | FROZEN | 工序只能分配给其 `STNFAM` 对应设备组中的合格设备 |
 | 组内机台 | FROZEN | 每台物理机拥有独立状态、当前 setup、故障/维护状态和占用区间 |
 | 组内分配 | FROZEN | 空闲合格机台构成动作的一部分；等价候选按 machine ID 稳定打破平局 |
@@ -109,6 +109,27 @@ REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>
 - sampling 随机 identity 为 `lot_id + route_id + step_id + visit_index`，occurrence 使用 `visit_index`，从而跨策略保持 CRN；当前已验证边界只有无 rework 的 `visit_index=0`。
 
 当前受限 runtime 只允许 `per_lot`、位置唯一为 `Fab`、无 Batch/Setup/cascade；CQT endpoint 仅允许显式 `p=100`，任何带 `StepPercent` 的 Dedication endpoint 均暂不支持。显式 `p=100` 不存在 skip 分支，因此可以作为 CQT endpoint。raw 逐条核对显示 sampled CQT target 为 HVLM 4、LVHM 18，且全部 `StepPercent=100`；stochastic sampled CQT target 为 0，因此当前真实 profile 不触发含糊的“跳过 target”语义，`DI_UNSUPPORTED_SAMPLING` 可以关闭。未来若出现随机 CQT endpoint 或 sampled Dedication endpoint，必须显式拒绝。两模型全部显式 StepPercent 工序还都使用带 `LOAD=1 min / UNLOAD=1 min` 的 tool template；当前 sampling slice 不执行这两段时长，只是抽样判定/映射诊断，`DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` 保留。sampling 判定闭环不等于完整物理 duration 闭环。
+
+### 3.3 Non-cascade、non-batch 的 LOAD/PROCESS_CORE/UNLOAD 受限子链
+
+这是 `0.1.7` 冻结的**受限**运行时语义，不是对整个 SMT2020 物理语义的关闭声明。阶段 runtime 的硬边界是 machine `cascading=false`、当前 operation 非 Batch/`per_batch` 且无 `PartInterval`/`BatchInterval`；现有 CQT、Dedication、sampling 和 Setup 语义不因装卸阶段自动失效，仍按各自契约执行。真实 SMT2020 loader slice 为了形成可审计的最小闭包，另外筛选无 Setup、sampling、rework、CQT、Dedication 的记录：
+
+```text
+DISPATCH/RESERVED
+  → LOAD_START … LOAD_FINISH
+  → PROCESS_START（core 开始；不另发 `PROCESS_CORE_START` trace） … PROCESS_CORE_FINISH
+  → UNLOAD_START … UNLOAD_FINISH
+  → PROCESS_FINISH (canonical completion)
+```
+
+- `LOAD` 和 `UNLOAD` 是 machine 占用阶段，分别进入 `load_intervals`、`unload_intervals`；不并入 `processing_intervals` 或纯加工时间。
+- `PROCESS_START` 只在 core 加工开始时发出，并关闭目标 CQT；CQT 不在 `LOAD_START` 关闭。`PROCESS_FINISH` 必须在 `UNLOAD_FINISH` 之后（无卸载时可同刻）触发，并继续作为路线推进、MINRUN 成功 lot 计数、CQT source 开钟、Dedication 释放、wafer-PM 完成计数和 lot completion 的 canonical 边界。
+- processing realization 只在已提交动作进入 core 时按稳定 processing 流抽样一次；`PROCESS_CORE_FINISH` 前后的 Failure/PM 抢占均按剩余时长恢复，不重新抽样。装卸阶段不消费 processing sample。
+- Failure/PM 可抢占 `LOAD`、core processing 或 `UNLOAD`；同一活动保存 `remaining_duration`，恢复后继续原阶段。旧完成事件由 activity token 失效。该组合语义仅在上述受限 profile 有效。
+- fixed horizon 使用闭区间 `[0,H]`：`event.time <= H` 才执行；`H` 时仍活动的 LOAD/PROCESS/UNLOAD 写入被截断的独立区间和 terminal WIP，未到达 `PROCESS_FINISH` 的 lot 不计完成。
+- 受限子链仍维持 machine 单一占用；第二个 lot 必须等待前一个 lot 的 `PROCESS_FINISH`，不能在 core 完成或 unload 尚未完成时重新派工。
+
+该子链不定义 cascade 的 lot 完成与 machine 释放双时点，不支持 Batch/`per_batch`、interval 和真实 MINRUN 组合；rework、multi-calendar attachment 仍由各自 Gate blocker 限制。详见 [SMT2020 Load/Unload/Cascade 语义审计](smt2020-cascade-semantic-audit.md) 和 [受限 runtime 审计](smt2020-load-unload-runtime-audit.md)。
 
 ## 4. Batch
 
@@ -240,7 +261,7 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | Remaining work | FROZEN | 期末 WIP 尚未执行的期望纯加工时间之和；不包含未知未来等待 |
 | Lateness exposure | FROZEN | 对期末 WIP 计算 `max(0, H-due)`，同时报告优先级加权总量 |
 | CQT | FROZEN | 闭合违规、超时量、仍开启窗口及期末已超时量分别报告 |
-| Utilization | FROZEN | processing、setup、down、PM、idle 时间分别报告；分母口径写入结果 |
+| Utilization | FROZEN | processing、load、unload、setup、down、PM、idle 时间分别报告；装卸不计入纯 processing；分母口径写入结果 |
 
 初始 WIP 没有完整释放历史，不与新投放 lot 的完整 cycle time 混合；只报告仿真内剩余逗留时间和期末状态。
 
@@ -302,3 +323,7 @@ MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按�
 ### 0.1.6 修订说明
 
 新增 Setup MINRUN 的合成场景运行时规则：真实换型完成后开始计数，仅有效加工完成按 lot 计数，候选和提交均执行硬约束；初始历史未知以保守下界处理并记录。该完成时计数与固定 PySCFabSim 参考实现的派工时扣减不同，是显式 E 级本地选择。没有因此关闭 SMT2020 MINRUN 的 Data Integration blocker，也未改变 MC01～MC08 的既有事件优先级。
+
+### 0.1.7 修订说明
+
+冻结 non-cascade、non-batch 的受限 `LOAD → PROCESS_CORE → UNLOAD` 子链：`PROCESS_START` 位于 core 开始并关闭 CQT，`PROCESS_FINISH` 在卸载后作为 canonical 完成边界；装卸与纯加工分别计时，processing 只在 committed core start 抽样一次，Failure/PM 对三阶段按剩余时长 preemptive-resume，fixed-horizon 对活动阶段做截断快照。真实 SMT2020 `r_3:18→19` 两模型诊断 slice 仅作受限验证；其他合格机、Failure/PM 日历和初始历史显式省略并写入 provenance。未改变 cascade、MINRUN 真实组合、rework、multi-calendar 的 blocker，也未授权正式 HVLM/LVHM 或 CMA-ES 实验。

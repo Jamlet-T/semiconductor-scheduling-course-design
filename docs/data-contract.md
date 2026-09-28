@@ -1,6 +1,6 @@
 # Data Contract：SMT2020 字段到仿真语义
 
-版本：`0.1.5`
+版本：`0.1.6`
 状态：本地模型语义已冻结；实现按 M1 分阶段验证  
 数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
 
@@ -10,7 +10,7 @@
 原始字段 → 内部数据结构 → 事件和状态如何变化
 ```
 
-“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.5` 已完成静态数据链、真实加工/搬运/release/batch 受限 validation slice、sampling 判定诊断 slice，以及 processing、exponential failure、transport、release 和 sampling runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.6` 已完成静态数据链、真实加工/搬运/release/batch 受限 validation slice、sampling 判定诊断 slice，以及 non-cascade、non-batch 的 load/process/unload 受限 runtime mapping，但 Data Integration Gate 因剩余 runtime blocker 尚未通过。
 
 ## 1. 证据层级与统一约定
 
@@ -74,9 +74,9 @@ Uniform[m - w/2, m + w/2]
 | `tool.STNQTY` | `MachineTemplate.quantity` | 实例化为确定 ID：`{STN}#0001...`；每台机独立占用 | FROZEN-SPEC |
 | `tool.STNGRP` | `Machine.group_id` | downtime/统计分组，不替代 `STNFAM` 资格 | FROZEN-SPEC |
 | `tool.STNFAMLOC` | `Machine.location_id` | 搬运表 from/to 的位置键 | FROZEN-SPEC |
-| `LTIME/LTUNITS` | `Machine.load_minutes` | 每次加工的 lot 占用时间组成 | FROZEN-SPEC |
-| `ULTIME/ULTUNITS` | `Machine.unload_minutes` | 每次加工的 lot 占用时间组成 | FROZEN-SPEC |
-| `STNCAP=2` | `Machine.cascading` | 标记级联设备；不解释为可同时容纳两个普通 lot | FROZEN-SPEC |
+| `LTIME/LTUNITS` | `Machine.load_minutes` | non-cascade 受限子链的独立 LOAD 占用阶段；不并入纯 processing | VERIFIED-limited |
+| `ULTIME/ULTUNITS` | `Machine.unload_minutes` | non-cascade 受限子链的独立 UNLOAD 占用阶段；不并入纯 processing | VERIFIED-limited |
+| `STNCAP=2` | `Machine.cascading` | 标记级联设备；不解释为可同时容纳两个普通 lot；级联 runtime 仍为 blocker | FROZEN-SPEC |
 | `RULE/FWLRANK/WAKERESRANK` | `NativeRuleMetadata` | 只用于 NativeLike 参考；纯 FIFO/SPT/EDD/CR 不继承这些复合规则 | FROZEN-SPEC |
 
 资格集合严格为：
@@ -100,7 +100,9 @@ eligible_machines(operation)
 | `PartInterval` | `CascadingSpec.part_interval` | lot 最后一片离开时刻为基础抽样加 `(pieces-1)*interval`；设备可用时刻为 `pieces*interval`，分别产生日志 |
 | `BatchInterval` | `CascadingSpec.batch_interval` | lot 完工仍使用加工分布；设备可用间隔使用该固定值 |
 
-load/unload 是否计入设备释放时刻按 `STNCAP` 的级联标记处理，并分别记录 lot 完工与 machine 可用事件。Processing distribution、`per_lot/per_piece/per_batch` 已由提交后一次性 sampler 与 duration resolver 执行；`PartInterval/BatchInterval`、`STNCAP` cascade 以及 load/unload 的 lot 完工与 machine release 双时点仍未实现，保持 Data Integration BLOCKER。
+对 `STNCAP!=2`、非 Batch/`per_batch` 且无 `PartInterval`/`BatchInterval` 的受限子链，阶段顺序冻结为 `LOAD → PROCESS_CORE → UNLOAD`：`PROCESS_START` 在 core 开始并关闭 CQT，且不另发 `PROCESS_CORE_START` trace；`PROCESS_FINISH` 在卸载结束后作为 canonical 完成边界。LOAD/UNLOAD 分别写入独立 phase interval 和 machine statistics，纯 processing interval 只覆盖 core；第二 lot 必须等 `PROCESS_FINISH` 后才能占用该 machine。processing duration 在 committed core start 后抽样一次，Failure/PM 在任一阶段按剩余时长恢复，fixed-horizon 在 `[0,H]` 截断仍活动阶段。现有 CQT、Dedication、sampling 和 Setup 机制在合成 runtime 中不因 L/U 自动禁用；真实 loader slice 另以无这些组合的最小筛选条件形成数据证据。
+
+这只是 non-cascade、non-batch 的 `VERIFIED-limited` 子链，不是完整物理闭环。`PartInterval/BatchInterval`、`STNCAP` cascade 的 lot finish/machine release 双时点、真实 MINRUN 组合、rework 和 multi-calendar 仍保持 Data Integration BLOCKER；不得把该子链的 `PROCESS_FINISH` 推广为 cascade 的 machine release 语义。
 
 ## 5. 动态投放、交期和优先级
 
@@ -163,7 +165,7 @@ n_wafers >= B_min
 and (n_wafers >= B_target or feasible_wait >= T_max)
 ```
 
-低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次。raw 不含 `B_target/T_max`，因此**无显式配置时仍是 Gate blocker**；Loader Contract `0.1.5` 接受 manifest 绑定的 `BatchDecisionConfig`。当前 v1 本地 E 级运行参数取每工序 `B_target=raw BATCHMX`、`T_max=60 min`，不是 SMT2020 原始真值或性能推荐。真实 initial-WIP batch slice 只验证决策/加工抽样；它省略设备装卸和 calendar attachment，因此不关闭对应的物理 runtime blocker。
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次。raw 不含 `B_target/T_max`，因此**无显式配置时仍是 Gate blocker**；Loader Contract `0.1.6` 继续接受 manifest 绑定的 `BatchDecisionConfig`。当前 v1 本地 E 级运行参数取每工序 `B_target=raw BATCHMX`、`T_max=60 min`，不是 SMT2020 原始真值或性能推荐。真实 initial-WIP batch slice 只验证决策/加工抽样；它省略设备装卸和 calendar attachment，因此不关闭对应的物理 runtime blocker。
 
 ## 8. Setup
 
@@ -261,7 +263,7 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 ```json
 {
-  "simulation_contract_version": "0.1.6",
+  "simulation_contract_version": "0.1.7",
   "dataset_version": "name@sha256:manifest_hash",
   "git_commit": "...",
   "seed": 42,
@@ -287,6 +289,10 @@ Fab → Fab, uniform(7.5, 2.5), min
 
 证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
 
-本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release/batch validation slice 与受限 sampling 判定诊断 slice 已由 Loader Contract `0.1.5` 实现。真实 sampling profile 已闭合；batch 决策配置在显式、manifest 匹配的 v1 配置下可形成受限 runtime 证据链。完整 raw SMT2020 → executable Scenario 仍因 rework、load/unload/cascade、setup MINRUN 和 multi-calendar runtime 缺口未闭环；不传 batch 配置时还保留 `DI_MISSING_BATCH_DECISION_CONFIG`。当前判定见 `smt2020-data-integration-gate.md`。
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release/batch validation slice、受限 sampling 判定诊断 slice 与真实 non-cascade load/unload 两工序 slice 已由 Loader Contract `0.1.6` 实现。真实 sampling profile 已闭合；batch 决策配置在显式、manifest 匹配的 v1 配置下可形成受限 runtime 证据链。完整 raw SMT2020 → executable Scenario 仍因 cascade、rework、setup MINRUN 和 multi-calendar runtime 缺口未闭环；load/unload 仅在受限 non-cascade/non-batch 子链进入 runtime，不关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`；不传 batch 配置时还保留 `DI_MISSING_BATCH_DECISION_CONFIG`。当前判定见 `smt2020-data-integration-gate.md`。
 
 这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的所有 blocker 全部清零并重新验收；显式 v1 batch 配置下当前为 4 类，默认无配置为 5 类。MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
+
+### 0.1.6 修订说明
+
+冻结 non-cascade、non-batch 的 `LOAD → PROCESS_CORE → UNLOAD` 字段到事件语义：LOAD/UNLOAD 与纯 processing 分开计时，`PROCESS_START` 在 core 开始关闭 CQT，`PROCESS_FINISH` 在卸载后作为 canonical 完成边界；processing 只在 committed core start 抽样一次，Failure/PM 对三阶段按剩余时长恢复，fixed-horizon 对活动阶段截断。真实 HVLM/LVHM `r_3:18→19` slice 仅为受限诊断，明确省略其他合格机、Failure/PM 日历和初始历史；cascade、MINRUN、rework、multi-calendar 与 Gate blocker 保持不变。

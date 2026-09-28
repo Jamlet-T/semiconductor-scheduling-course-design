@@ -17,7 +17,7 @@
   ],
   "technical_route": {
     "status": "frozen",
-    "contract_version": "0.1.6",
+    "contract_version": "0.1.7",
     "current_milestone": "SMT2020_DATA_INTEGRATION_GATE",
     "optimizer": "CMA-ES",
     "optimizer_enabled": false,
@@ -39,8 +39,8 @@
   },
   "smt2020_data_integration_gate": {
     "status": "not_passed_gaps",
-    "loader_contract_version": "0.1.5",
-    "loader_version": "0.1.5",
+    "loader_contract_version": "0.1.6",
+    "loader_version": "0.1.6",
     "validated_models": [
       "SMT2020_HVLM",
       "SMT2020_LVHM"
