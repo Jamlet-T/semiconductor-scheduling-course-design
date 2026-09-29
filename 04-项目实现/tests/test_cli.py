@@ -35,18 +35,22 @@ class CliTests(unittest.TestCase):
     def test_info_reports_m1_status_without_results(self) -> None:
         result = self.run_cli("info")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("项目阶段：M1 Simulation Reliability Baseline", result.stdout)
+        self.assertIn("项目阶段：M1 已通过；准备课程设计受限基线", result.stdout)
         self.assertIn("项目周期：14 周", result.stdout)
         self.assertIn(
             "仿真状态：可信轻量 DES 已验证 MC01-MC08；M1 已通过",
             result.stdout,
         )
         self.assertIn(
-            "数据状态：SMT2020 Data Integration Gate 待验证",
+            "数据状态：完整 SMT2020 Data Integration Gate = not_passed_gaps",
             result.stdout,
         )
         self.assertIn(
-            "优化器状态：CMA-ES 已选型，Data Integration Gate 通过前禁用",
+            "课程基线状态：Course Baseline Gate = not_started",
+            result.stdout,
+        )
+        self.assertIn(
+            "优化器状态：optimizer_enabled=false；CMA-ES 暂不启动",
             result.stdout,
         )
         self.assertNotIn("吞吐量", result.stdout)
