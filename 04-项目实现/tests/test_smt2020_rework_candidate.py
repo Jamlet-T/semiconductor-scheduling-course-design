@@ -1,8 +1,9 @@
 """真实 SMT2020 rework 候选的静态回归与反误判测试。
 
-本文件只验证 raw -> static model 的字段、初始 WIP 位置和 attachment 展开。
-它不构造 route loop、不执行仿真、不修改契约，也不把候选段解释为 rework
-runtime 或 Data Integration closure。audit/default 模式仍必须保留 blocker。
+本文件验证 raw -> static model 的字段、初始 WIP 位置和 attachment 展开；另以
+multi-calendar validation slice 做 return 单工序诊断回归。它不构造 route loop，
+不把候选段解释为 rework runtime 或 Data Integration closure。audit/default 模式
+仍必须保留 blocker。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASETS_ROOT = PROJECT_ROOT / "datasets"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+from fab_scheduler.api import simulate  # noqa: E402
 from fab_scheduler.data import LoaderConfig, load_smt2020  # noqa: E402
 
 
@@ -365,6 +367,104 @@ class SMT2020ReworkCandidateStaticTests(unittest.TestCase):
                             for entry in loaded.loader_audit
                         )
                     )
+
+    def test_return_step_cross_checks_multi_calendar_per_piece_load_unload_slice(self) -> None:
+        """两模型 return raw step 与受限 per-piece + L/U 诊断链保持一致。"""
+
+        slice_config = LoaderConfig(mode="multi_calendar_validation_slice")
+        expected_warning_codes = {
+            "DI_MULTI_CALENDAR_SLICE_OMITS_FAILURE",
+            "DI_MULTI_CALENDAR_SLICE_OMITS_OTHER_MACHINES",
+            "DI_MULTI_CALENDAR_SLICE_OMITS_ROUTE_HISTORY",
+            "DI_MULTI_CALENDAR_SLICE_INITIAL_HISTORY_UNKNOWN",
+            "DI_MULTI_CALENDAR_SLICE_NOT_FULL_FAB",
+        }
+        for model in MODELS:
+            with self.subTest(model=model):
+                expected = CANDIDATES[model]
+                loaded = load_smt2020(
+                    DATASETS_ROOT, model, loader_config=slice_config
+                )
+                scenario = loaded.scenario
+                self.assertIsNotNone(scenario)
+                assert scenario is not None
+
+                return_step = expected["steps"][0]
+                route = next(
+                    item for item in loaded.static_model.routes
+                    if item.route_id == expected["route_id"]
+                )
+                operation = next(
+                    item for item in route.operations if item.step_id == return_step
+                )
+                self.assertEqual(
+                    (operation.step_id, operation.source_row, operation.processing_basis),
+                    (
+                        return_step,
+                        expected["route_rows"][return_step]["line"],
+                        "per_piece",
+                    ),
+                )
+                self.assertEqual(
+                    scenario.lots[0].lot_id,
+                    expected["wip_rows"]["return"]["lot"],
+                )
+                self.assertEqual(scenario.lots[0].quantity_wafers, 25)
+                self.assertEqual(
+                    (scenario.lots[0].operations[0].step_id,
+                     scenario.lots[0].operations[0].processing_basis),
+                    (return_step, "per_piece"),
+                )
+                self.assertEqual(
+                    (scenario.machines[0].load_minutes, scenario.machines[0].unload_minutes),
+                    (1.0, 1.0),
+                )
+
+                result = simulate({"policy_id": "fifo"}, scenario, 42)
+                processing_samples = [
+                    item for item in result.random_sample_ledger
+                    if item.stream_name == "processing"
+                ]
+                self.assertEqual(len(processing_samples), 1)
+                self.assertEqual(len(result.processing_intervals), 1)
+                self.assertAlmostEqual(
+                    result.processing_intervals[0].finish
+                    - result.processing_intervals[0].start,
+                    processing_samples[0].value * scenario.lots[0].quantity_wafers,
+                )
+                self.assertEqual(
+                    [item.finish - item.start for item in result.load_intervals],
+                    [1.0],
+                )
+                self.assertEqual(
+                    [item.finish - item.start for item in result.unload_intervals],
+                    [1.0],
+                )
+
+                provenance = dict(scenario.dataset_provenance.loader_config)
+                self.assertEqual(
+                    (provenance["multi_calendar_slice_raw_load_minutes"],
+                     provenance["multi_calendar_slice_raw_unload_minutes"]),
+                    ("1.0", "1.0"),
+                )
+                self.assertTrue(
+                    expected_warning_codes <= {
+                        item.code for item in loaded.loader_audit
+                    }
+                )
+                self.assertTrue(provenance["multi_calendar_slice_omitted_machine_ids"])
+                self.assertTrue(provenance["multi_calendar_slice_omitted_rework_links"])
+                self.assertFalse(
+                    any(item.event_type.startswith("REWORK") for item in result.trace)
+                )
+                self.assertEqual(
+                    provenance["multi_calendar_slice_omitted_failure_calendar_ids"],
+                    "BREAK_Litho",
+                )
+                self.assertIn(
+                    "does_not_close_DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT",
+                    provenance["multi_calendar_slice_scope_boundary"],
+                )
 
 
 if __name__ == "__main__":

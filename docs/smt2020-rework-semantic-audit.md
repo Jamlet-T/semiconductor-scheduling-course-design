@@ -119,7 +119,9 @@ raw audit 观察到 source 与 return 的 `STNFAM` 不同，且由 `STNFAM` 展�
 
 上述三步段的 tool template 均为 non-cascade、每次 LOAD/UNLOAD 各 1 min；它们仅是可追溯的**静态候选**。逐台展开真实附件后，`Litho_BE_110` 的每台合格机有 1 条 failure、3 条 calendar PM，`LithoMet_BE_18` 与 `Litho_REG_BE_63` 各有 1 条 failure、2 条 calendar PM，均无 wafer PM；因此保留真实维护配置的物理闭环还依赖 Multi-calendar，不能用省略日历的诊断 slice 冒充完整兼容。每个候选段都包含真实 sampling 重入；source 与 return 的普通 qualification 机台交集在两模型 14/52 条返工规则中均为零，这不裁决论文所说的 per-step “same machines”。initial WIP 无法提供仿真零点前的 visit、抽样与机器历史。因此即使现有 non-cascade L/U 已可执行，也不能从这些候选直接推出可信 rework route loop 或关闭 `DI_UNSUPPORTED_REWORK`。后续若选择本地 E 级 `lot/source once` 等规则，必须先版本化冻结并与按 visit 重判等替代解释做 trace 对照。
 
-2026-09-29 独立 raw 复核还确认：14/52 条返工三步段本身均无 Setup、Batch、Part/BatchInterval、CQT 或 `STNCAP=2`，所以 Cascade 双时点不是返工回跳的必然前置条件；但上述两个严格候选的 return 工序为 `per_piece`，而现有 `load_unload_validation_slice` 只接受 `per_lot` 并排除 sampling/rework。故它们仍不能直接交给该 slice builder 执行。要得到受限真实闭环，必须分别补齐 visit-indexed route loop、重入 sampling/CRN、`per_piece` 与装卸阶段的组合验证，以及多 Calendar PM/Failure 的保留或逐项显式省略；initial WIP 的 visit/机台历史继续标为 unknown。这一依赖判断不更改现有 Gate blocker。
+2026-09-29 独立 raw 复核还确认：14/52 条返工三步段本身均无 Setup、Batch、Part/BatchInterval、CQT 或 `STNCAP=2`，所以 Cascade 双时点不是返工回跳的必然前置条件；但上述两个严格候选的 return 工序为 `per_piece`，而现有 `load_unload_validation_slice` 只接受 `per_lot` 并排除 sampling/rework。故它们仍不能直接交给该 slice builder 执行。要得到受限真实返工闭环，必须分别补齐 visit-indexed route loop、重入 sampling/CRN，以及多 Calendar PM/Failure 的保留或逐项显式省略；initial WIP 的 visit/机台历史继续标为 unknown。这一依赖判断不更改现有 Gate blocker。
+
+进一步交叉核对发现：两模型的 return 行恰是既有 `multi_calendar_validation_slice` 的当前工序（HVLM `r_3:491`、LVHM `r_2:459`）。该受限 Scenario 已以真实 25-wafer WIP、`per_piece` 随机加工和各 1 分钟的 LOAD/UNLOAD 执行，并由 `test_smt2020_rework_candidate.py` 与 `test_smt2020_multi_calendar_validation.py` 联合锁定 raw 行、加工账本、阶段区间和省略项。因此 `per_piece`×装卸**组合验证已有单工序证据**，不需为它另造切片；仍未验收的是从 return 经 sampled middle/source 到回跳的 visit loop、Failure 附件及初始历史。这一单工序结果不能标为 rework runtime 通过。
 
 `04-项目实现/tests/test_smt2020_rework_candidate.py` 对上述 raw 行、parser、initial WIP、所有合格机的装卸与附件交集以及默认/audit 模式仍保留 blocker 做 4 项回归；它是静态证据，不执行返工仿真。
 
