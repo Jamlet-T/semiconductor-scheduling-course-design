@@ -2,7 +2,7 @@
 
 审计日期：2026-09-27
 状态：**raw 关系已核对；返工 visit/lifecycle 尚未闭环；`DI_UNSUPPORTED_REWORK` 仍为 BLOCKER。**
-原审计基线：Simulation Contract `0.1.6`、Loader Contract `0.1.4`、Policy Contract `0.1.1`、Data Contract `0.1.4`；2026-09-28 复核后当前版本为 Simulation `0.1.8`、Loader `0.1.7`、Policy `0.1.1`、Data `0.1.7`，未改变返工语义。
+原审计基线：Simulation Contract `0.1.6`、Loader Contract `0.1.4`、Policy Contract `0.1.1`、Data Contract `0.1.4`；2026-09-28 复核后当前版本为 Simulation `0.1.9`、Loader `0.1.7`、Policy `0.1.1`、Data `0.1.8`，未改变返工语义。
 
 本文只审计 SMT2020 的 `RWKSTEP/REWORK/RWKTYPE` 与它和 sampling、dedication、CQT、initial WIP 的组合关系。它不修改任何契约版本、Gate exit criteria、测试数量或优化器状态；也不把参考实现的行为升级为 SMT2020 真值。
 

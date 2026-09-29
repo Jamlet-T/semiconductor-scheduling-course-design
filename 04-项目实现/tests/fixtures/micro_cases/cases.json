@@ -1,7 +1,7 @@
 {
   "schema_version": "0.1.0",
-  "contract_version": "0.1.8",
-  "event_priority_contract_version": "0.1.8",
+  "contract_version": "0.1.9",
+  "event_priority_contract_version": "0.1.9",
   "time_unit": "minute",
   "status": "mc01_mc08_verified_m1_passed",
   "cases": [
@@ -1022,6 +1022,28 @@
             {"time": 7, "event": "PROCESS_FINISH", "lot": "L2", "machine": "M1", "step": 1},
             {"time": 7, "event": "LOT_COMPLETE", "lot": "L2", "step": 1}
           ]
+        },
+        {
+          "id": "MULTI_WAFER_SAME_MACHINE",
+          "machine": "M1",
+          "lots": [
+            {"id": "L1", "release": 0, "quantity_wafers": 25, "process": 1}
+          ],
+          "wafer_pms": [
+            {"pm_id": "PM-A", "threshold_wafers": 25, "initial_counter_wafers": 0, "duration": 2},
+            {"pm_id": "PM-B", "threshold_wafers": 25, "initial_counter_wafers": 0, "duration": 2}
+          ],
+          "horizon": 10,
+          "expected": {
+            "due_order": ["PM-A", "PM-B"],
+            "owner_intervals": [
+              {"pm_id": "PM-A", "start": 1, "finish": 3},
+              {"pm_id": "PM-B", "start": 3, "finish": 5}
+            ],
+            "machine_wafer_counter": null,
+            "authoritative_state": "per_pm_snapshot",
+            "raw_initial_history": "unknown"
+          }
         }
       ],
       "termination": {"mode": "fixed_horizon", "horizon": 30},

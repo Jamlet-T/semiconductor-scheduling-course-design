@@ -6,6 +6,7 @@ Setup、Batch、CQT、Dedication 和 preemptive-resume Failure。PM 尚未解锁
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from enum import Enum
 import heapq
@@ -827,6 +828,14 @@ class Simulator:
                     "identity": "machine_id+occurrence_index",
                 },
                 "pm_runtime_schema_version": PM_RUNTIME_SCHEMA_VERSION,
+                "wafer_pm_combination_rule": {
+                    "state_key": "machine_id+pm_id",
+                    "simultaneous_due_order": "pm_id_ascending",
+                    "downtime_owner": "one_per_machine_sequential",
+                    "counter_reset": "zero_without_carry",
+                    "multi_spec_machine_counter": "none_use_per_pm_snapshots",
+                    "evidence_level": "E_local_modeling_rule",
+                },
                 "pm_random_streams": {
                     "interval": "pm_interval",
                     "duration": "pm_duration",
@@ -1536,6 +1545,7 @@ class Simulator:
         if cause is DowntimeCause.WAFER_PM:
             wafer_due = self._pm_runtime.start_wafer_pm(
                 machine_id,
+                occurrence.pm_id,
                 occurrence.occurrence_index,
             )
         interrupted = self._suspend_activity(
@@ -1625,6 +1635,7 @@ class Simulator:
         if occurrence.trigger_type == DowntimeCause.WAFER_PM.value:
             wafer_due = self._pm_runtime.finish_wafer_pm(
                 machine_id,
+                occurrence.pm_id,
                 occurrence.occurrence_index,
             )
         machine.availability = MachineAvailability.UP
@@ -3138,29 +3149,30 @@ class Simulator:
         operation: Any | None = None,
         batch_id: str | None = None,
     ) -> None:
-        due = self._pm_runtime.account_completed_wafers(machine_id, wafers)
-        if due is None:
+        dues = self._pm_runtime.account_completed_wafers(machine_id, wafers)
+        if not dues:
             return
-        self._record(
-            event_type="PM_DUE",
-            priority=event.priority,
-            cause_event_seq=event.seq,
-            lot=lot,
-            operation=operation,
-            machine_id=machine_id,
-            batch_id=batch_id,
-            downtime_cause=DowntimeCause.WAFER_PM.value,
-            pm_id=due.pm_id,
-            pm_trigger_type=DowntimeCause.WAFER_PM.value,
-            pm_occurrence_index=due.occurrence_index,
-            pm_duration=due.duration,
-            wafer_counter_before=due.counter_before,
-            wafer_counter_after=due.counter_after,
-            wafer_threshold=due.threshold_wafers,
-            processed_wafers=due.processed_wafers,
-            state_before="PM:NOT_DUE",
-            state_after="PM:PENDING",
-        )
+        for due in dues:
+            self._record(
+                event_type="PM_DUE",
+                priority=event.priority,
+                cause_event_seq=event.seq,
+                lot=lot,
+                operation=operation,
+                machine_id=machine_id,
+                batch_id=batch_id,
+                downtime_cause=DowntimeCause.WAFER_PM.value,
+                pm_id=due.pm_id,
+                pm_trigger_type=DowntimeCause.WAFER_PM.value,
+                pm_occurrence_index=due.occurrence_index,
+                pm_duration=due.duration,
+                wafer_counter_before=due.counter_before,
+                wafer_counter_after=due.counter_after,
+                wafer_threshold=due.threshold_wafers,
+                processed_wafers=due.processed_wafers,
+                state_before="PM:NOT_DUE",
+                state_after="PM:PENDING",
+            )
         self._schedule_pending_wafer_pm(machine_id)
 
     def _advance_lot_after_processing(
@@ -3979,9 +3991,9 @@ class Simulator:
                     failure_downtime_by_machine[machine_id] += duration
                 else:
                     pm_downtime_by_machine[machine_id] += duration
-        wafer_states = {
-            state.machine_id: state for state in self._pm_runtime.snapshots
-        }
+        wafer_states: dict[str, list[WaferPMStateSnapshot]] = defaultdict(list)
+        for state in self._pm_runtime.snapshots:
+            wafer_states[state.machine_id].append(state)
         return {
             machine_id: MachineStatistics(
                 machine_id=machine_id,
@@ -4028,14 +4040,12 @@ class Simulator:
                     else None
                 ),
                 wafer_counter=(
-                    wafer_states[machine_id].counter_wafers
-                    if machine_id in wafer_states
+                    wafer_states[machine_id][0].counter_wafers
+                    if len(wafer_states[machine_id]) == 1
                     else None
                 ),
                 wafer_pm_pending=(
-                    wafer_states[machine_id].pending
-                    if machine_id in wafer_states
-                    else False
+                    any(state.pending for state in wafer_states[machine_id])
                 ),
             )
             for machine_id, machine in sorted(self._machines.items())

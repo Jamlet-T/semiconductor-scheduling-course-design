@@ -2,7 +2,7 @@
 
 状态：M1 Closure Audit + SMT2020 Runtime Compatibility Gap Closure 证据基线
 
-适用契约：Simulation Contract `0.1.8`；Data Contract `0.1.7`；Loader Contract `0.1.7`
+适用契约：Simulation Contract `0.1.9`；Data Contract `0.1.8`；Loader Contract `0.1.7`
 
 审计日期：2026-09-28
 
@@ -90,6 +90,6 @@ Loader Contract `0.1.7` 已在真实 HVLM/LVHM 上完成静态映射与受限 ru
 
 诊断 selector、source-row、复合 `pm_id`、FOA/interval/duration、overlap/horizon、omitted IDs 与 manifest/raw hashes 均写入 `DatasetProvenanceSpec.loader_config`。warning 代码为 `DI_MULTI_CALENDAR_SLICE_OMITS_FAILURE`、`DI_MULTI_CALENDAR_SLICE_OMITS_OTHER_MACHINES`、`DI_MULTI_CALENDAR_SLICE_OMITS_ROUTE_HISTORY`、`DI_MULTI_CALENDAR_SLICE_INITIAL_HISTORY_UNKNOWN` 和 `DI_MULTI_CALENDAR_SLICE_NOT_FULL_FAB`；此外全量 `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` 仍为 BLOCKER，Gate 仍是 `not_passed_gaps`。因此这里的 A/B 证据支持 raw 映射，E/F 支持省略与不可恢复历史边界，但不能升级为“SMT2020 full-fab 已集成”。
 
-受限运行验收记录为 `test_smt2020_multi_calendar_validation.py: 7 passed`，full regression `282 passed`；验收覆盖两模型 raw→Scenario→`simulate()`、真实 overlap 时钟、audit/CRN/provenance。该结果是诊断 slice 的运行证据，不是 full-fab 集成、正式 KPI 或 HVLM/LVHM 策略实验结果。
+受限运行验收记录为 `test_smt2020_multi_calendar_validation.py: 7 passed`，本轮 full regression `293 passed`；验收覆盖两模型 raw→Scenario→`simulate()`、真实 overlap 时钟、audit/CRN/provenance。该结果是诊断 slice 的运行证据，不是 full-fab 集成、正式 KPI 或 HVLM/LVHM 策略实验结果。
 
 完整判定见 `smt2020-data-integration-gate.md`。

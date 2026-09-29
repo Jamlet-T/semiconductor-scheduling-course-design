@@ -13,7 +13,7 @@ from fab_scheduler.simulation.random_streams import EntityRandomStreams
 from fab_scheduler.simulation.distributions import sample_distribution
 
 
-PM_RUNTIME_SCHEMA_VERSION = "0.1.1"
+PM_RUNTIME_SCHEMA_VERSION = "0.1.2"
 PM_INTERVAL_STREAM = "pm_interval"
 PM_DURATION_STREAM = "pm_duration"
 
@@ -79,16 +79,12 @@ class PMRuntime:
             seen_pm_ids.add(spec.pm_id)
             self._calendar[spec.pm_id] = spec
 
-        seen_wafer_machines: set[str] = set()
-        self._wafer: dict[str, _WaferState] = {}
+        self._wafer: dict[tuple[str, str], _WaferState] = {}
         for spec in wafer_specs:
             if spec.pm_id in seen_pm_ids:
                 raise ValueError("PM pm_id 不能重复")
-            if spec.machine_id in seen_wafer_machines:
-                raise ValueError("每台 machine 最多一条 wafer PM spec")
             seen_pm_ids.add(spec.pm_id)
-            seen_wafer_machines.add(spec.machine_id)
-            self._wafer[spec.machine_id] = _WaferState(
+            self._wafer[(spec.machine_id, spec.pm_id)] = _WaferState(
                 spec, spec.initial_counter_wafers
             )
         self._streams = streams
@@ -124,47 +120,77 @@ class PMRuntime:
         # 下一次也不能从实际处理/恢复时刻重新起算而发生漂移。
         return PMOccurrence(spec.pm_id, spec.machine_id, index, occurrence.start_time + interval, duration, "CALENDAR_PM", "periodic")
 
-    def account_completed_wafers(self, machine_id: str, wafers: int) -> WaferPMDue | None:
-        state = self._wafer.get(machine_id)
-        if state is None:
-            return None
+    def account_completed_wafers(
+        self, machine_id: str, wafers: int
+    ) -> tuple[WaferPMDue, ...]:
+        states = self._states_for_machine(machine_id)
+        if not states:
+            return ()
         if wafers <= 0:
             raise ValueError("completed wafers 必须为正")
-        before = state.counter_wafers
-        state.counter_wafers += wafers
-        if state.pending is not None or state.active is not None:
+        if any(
+            state.pending is not None or state.active is not None
+            for state in states
+        ):
             raise RuntimeError("wafer PM pending/active 时不应完成新的物理加工")
-        if state.counter_wafers < state.spec.threshold_wafers:
-            return None
-        index = state.occurrence_count
-        due = WaferPMDue(
-            pm_id=state.spec.pm_id,
-            machine_id=machine_id,
-            occurrence_index=index,
-            counter_before=before,
-            processed_wafers=wafers,
-            counter_after=state.counter_wafers,
-            threshold_wafers=state.spec.threshold_wafers,
-            duration=self._sample(state.spec.duration, PM_DURATION_STREAM, state.spec.pm_id, index),
-        )
-        state.pending = due
-        return due
+
+        dues: list[WaferPMDue] = []
+        # 一次 PROCESS_FINISH 更新该 machine 上所有 PM 的计数；按 pm_id
+        # 遍历可同时固定到期生成顺序与随机流消费顺序。
+        for state in states:
+            before = state.counter_wafers
+            state.counter_wafers += wafers
+            if state.counter_wafers < state.spec.threshold_wafers:
+                continue
+            index = state.occurrence_count
+            due = WaferPMDue(
+                pm_id=state.spec.pm_id,
+                machine_id=machine_id,
+                occurrence_index=index,
+                counter_before=before,
+                processed_wafers=wafers,
+                counter_after=state.counter_wafers,
+                threshold_wafers=state.spec.threshold_wafers,
+                duration=self._sample(
+                    state.spec.duration,
+                    PM_DURATION_STREAM,
+                    state.spec.pm_id,
+                    index,
+                ),
+            )
+            state.pending = due
+            dues.append(due)
+        return tuple(dues)
 
     def pending_for_machine(self, machine_id: str) -> WaferPMDue | None:
-        state = self._wafer.get(machine_id)
-        return None if state is None else state.pending
+        for state in self._states_for_machine(machine_id):
+            if state.pending is not None:
+                return state.pending
+        return None
 
-    def start_wafer_pm(self, machine_id: str, occurrence_index: int) -> WaferPMDue:
-        state = self._wafer[machine_id]
+    def start_wafer_pm(
+        self, machine_id: str, pm_id: str, occurrence_index: int
+    ) -> WaferPMDue:
+        state = self._wafer[(machine_id, pm_id)]
         due = state.pending
         if due is None or due.occurrence_index != occurrence_index:
             raise RuntimeError("wafer PM start 与 pending state 不一致")
+        if any(
+            candidate.active is not None
+            for candidate in self._states_for_machine(machine_id)
+            if candidate is not state
+        ):
+            raise RuntimeError("同一 machine 不得并行执行多个 wafer PM")
+        if self.pending_for_machine(machine_id) is not due:
+            raise RuntimeError("wafer PM start 必须遵循 pm_id 排序的 pending state")
         state.pending = None
         state.active = due
         return due
 
-    def finish_wafer_pm(self, machine_id: str, occurrence_index: int) -> WaferPMDue:
-        state = self._wafer[machine_id]
+    def finish_wafer_pm(
+        self, machine_id: str, pm_id: str, occurrence_index: int
+    ) -> WaferPMDue:
+        state = self._wafer[(machine_id, pm_id)]
         due = state.active
         if due is None or due.occurrence_index != occurrence_index:
             raise RuntimeError("wafer PM finish 与 active state 不一致")
@@ -186,7 +212,14 @@ class PMRuntime:
                 occurrence_count=state.occurrence_count,
                 reset_rule=state.spec.reset_rule,
             )
-            for machine_id, state in sorted(self._wafer.items())
+            for (machine_id, _pm_id), state in sorted(self._wafer.items())
+        )
+
+    def _states_for_machine(self, machine_id: str) -> tuple[_WaferState, ...]:
+        return tuple(
+            state
+            for (state_machine_id, _pm_id), state in sorted(self._wafer.items())
+            if state_machine_id == machine_id
         )
 
     def _sample(self, distribution: TimeDistributionSpec, stream: str, pm_id: str, occurrence: int) -> float:

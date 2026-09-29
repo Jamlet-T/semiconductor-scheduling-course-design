@@ -1,7 +1,7 @@
 # 可信轻量 DES 架构
 
-适用版本：Simulation Contract `0.1.8`
-当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release/sampling profile；MC01～MC08 保持 verified
+适用版本：Simulation Contract `0.1.9`；Data Contract `0.1.8`
+当前能力：Basic DES + Setup + Batch + CQT + Dedication + preemptive-resume Failure/PM + 外生无容量 Transport + 受限 SMT2020 release/sampling profile + synthetic 同机多 Wafer PM；MC01～MC08 保持 verified
 
 锁定能力：正式 SMT2020 loader、优化器
 
@@ -212,3 +212,5 @@ Dedication 结果包含已释放 binding records、期末 active binding snapsho
 MC01～MC08 已全部通过。`fab_scheduler.evaluation.audit` 从 trace 独立重算基础 lot 指标，并检查 lot/machine 时间守恒、Batch 容量、CQT、Dedication、Transport、Release Template 与 Sampling 记录。统一 DispatchAction、FIFO/SPT/EDD/CR、RandomSampleLedger/CRN audit 和公共 `simulate(...)` API 补齐后，原始 M1 E01～E10 全部 PASS。Simulation Contract `0.1.5` 新增 sampling profile，`0.1.6` 增加合成场景 Setup MINRUN 硬约束；均不改变 MC01～MC08 既有事件优先级，M1 状态保持 `passed`。raw sampled CQT targets 4/18 全为 p100，stochastic endpoint 为 0，sampling blocker 已关闭；MINRUN 真实组合仍未闭环。诊断 slice 没有执行全部 sampled 工序共有的 1 分钟 load/unload；显式 v1 Batch 配置下 Data Integration Gate 仍有 4 类 blocker，默认无配置为 5 类，状态均为 `not_passed_gaps`，优化器继续禁用。
 
 Simulation Contract `0.1.7` 增加 non-cascade/non-batch 的受限 LOAD/PROCESS_CORE/UNLOAD 阶段链；`0.1.8` 增加同机多 Calendar PM 的独立 `pm_id` 和确定性同刻/重叠处理。两者分别通过真实 SMT2020 受限诊断 slice，但都不闭合 cascade、同机多 Wafer PM、Failure/完整路线/初始历史等组合缺口。Data Integration Gate 继续为 `not_passed_gaps`，不启动正式 HVLM/LVHM 策略实验或优化器。
+
+当前 `0.1.9` synthetic runtime 进一步支持同一 machine 的多条 Wafer PM：按 `(machine_id, pm_id)` 独立维护 counter/pending/active/occurrence，同刻 due 按 `pm_id` 排序并以单一 downtime owner 串行执行；多 spec 时 machine 级 `wafer_counter` 为 `None`，per-PM snapshot 权威。该能力不等于 SMT2020 raw 组合闭合；raw 同机多 Wafer PM、Failure/完整路线和初始历史仍由 `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` 阻塞，`optimizer_enabled=false`。

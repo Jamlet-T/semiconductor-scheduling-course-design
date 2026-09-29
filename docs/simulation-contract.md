@@ -1,6 +1,6 @@
 # Simulation Contract：动态晶圆厂仿真契约
 
-版本：`0.1.8`
+版本：`0.1.9`
 状态：技术路线和本地数据语义冻结，机制分阶段验证中
 适用里程碑：`M1 — Simulation Reliability Baseline`
 
@@ -226,11 +226,11 @@ cqt_risk = elapsed_since_source_finish / max_duration
 | 同机多 Calendar PM | FROZEN | **初始** Calendar PM occurrences 按稳定键 `(start_time,machine_id,pm_id,occurrence_index)` 排序安排；后续 periodic occurrence 在前一次事件到达时生成。任何同刻 `PM_START` 按已分配的 `event_seq` 处理，先处理者取得唯一 active downtime owner，后来的 occurrence 记录 `PM_START_STALE`，不延期、不回补。该优先级是项目本地确定性规则，raw attachment 只证明多条附着，不提供 PM-PM 优先级 |
 | wafer PM 计数 | FROZEN | 仅在真实 `PROCESS_FINISH/BATCH_FINISH` 后累计完成 wafer；普通 lot 加 `quantity_wafers`，Batch 只按 `total_wafers` 加一次 |
 | wafer PM 启动 | FROZEN | 达到/越过阈值后置为 pending，在下一次派工前执行；中断、恢复和 stale finish 均不得重复累计 |
-| 多 wafer PM 状态 | FROZEN | 每个受支持的 wafer PM `pm_id`/machine 独立维护 counter、pending、active 和 occurrence；当前 Scenario/PMRuntime 明确拒绝同一 machine 的多个 wafer PM spec，故不宣称已支持 raw 的完整多 wafer PM 组合 |
+| 多 wafer PM 状态 | FROZEN | 每个受支持的 `(machine_id, pm_id)` 独立维护 counter、pending、active 和 occurrence；同一 machine 的所有到期记录在同一完成事件内按 `pm_id` 排序写入，随后按该顺序串行取得唯一 downtime owner，未取得 owner 的 pending 保留；machine 级标量 `wafer_counter` 在存在多条 spec 时为 `None`，以每 PM 快照为准 |
 | wafer PM reset | FROZEN | PM 完成后计数归零，超过阈值的余量不结转；这是 Contract 0.1.3 的显式本地规则 |
 | 停机所有权 | FROZEN | 每台 machine 同时最多一个 active downtime owner；Failure、Calendar PM、Wafer PM 的触发、统计和 provenance 分开 |
-| Failure/PM 重叠 | FROZEN | 已 DOWN 时到达的 Failure 或 Calendar PM occurrence 无效；PM 期间被抑制的 stochastic failure 在 PM 完成后从该时刻采样下一间隔；pending wafer PM 保留，并在当前 downtime 结束、恢复派工前执行 |
-| 同刻 Failure/PM | FROZEN | `FAILURE_START` 优先于 `PM_START`；Failure 取得所有权，随后同刻 PM occurrence 记为 stale |
+| Failure/PM 重叠 | FROZEN | 已 DOWN 时到达的 Failure 或 Calendar PM occurrence 无效；PM 期间被抑制的 stochastic failure 在 PM 完成后从该时刻采样下一间隔；pending wafer PM 保留，并在当前 downtime 结束、恢复派工前按 `pm_id` 顺序执行 |
+| 同刻 Failure/PM | FROZEN | `FAILURE_START` 优先于 `PM_START`；Failure 取得所有权，同刻 Calendar PM occurrence 记为 stale，而 wafer PM 只记录 `PM_START_DEFERRED` 并保留 pending，待当前停机结束后按 `pm_id` 顺序执行 |
 | 旧完成事件 | FROZEN | 活动被中断后，旧完成事件必须用版本号/取消标记失效，禁止重复完工 |
 
 故障间隔和维修时长使用相互独立的实体索引流 `(seed, stream, machine_id, occurrence_index)`；PM interval/duration 使用独立的 `(seed, stream, pm_id, occurrence_index)`。scripted 与 stochastic/periodic 配置只在事件生成方式上不同；事件到达后共用同一暂停、停机所有权和恢复路径。微型算例可显式声明 `preemptive-resume` 以验证内核能力；这不自动代表完整 SMT2020 的正式语义。
@@ -333,3 +333,7 @@ MC08 实现前补齐了四项会改变 PM 长期行为的语义：完成时按�
 ### 0.1.8 修订说明
 
 在本地合成 runtime 冻结同机多 Calendar PM 的确定性组合：初始 occurrences 按 `(start_time,machine_id,pm_id,occurrence_index)` 排序安排；后续周期 occurrence 在其前一次事件到达时生成，同刻按已分配 `event_seq` 处理，由先执行者取得唯一 downtime owner，后来同刻或重叠的 Calendar PM 记为 stale；stale occurrence 不延期，其下一周期仍从原计划开始时刻加 interval 生成。该规则用于保证输入顺序无关和周期不漂移，不声称 raw 提供了 PM-PM 优先级。真实 HVLM/LVHM 一机一工序诊断 slice 已验证 raw→Scenario→runtime 的受限链；补充了受支持 wafer PM spec 的独立 counter/pending 口径；同机多 wafer PM 以及完整 raw 多日历组合仍由 Data Integration blocker 管理。
+
+### 0.1.9 修订说明
+
+在本地合成 runtime 澄清并冻结同机多 Wafer PM 的组合边界：每个 `(machine_id, pm_id)` 独立累计完成 wafer、维护 pending/active/occurrence，并以 `pm_id` 排序记录同一完成事件产生的全部 `PM_DUE`；同一 machine 的 wafer PM 必须串行执行，未取得停机所有权的 pending 不丢失。既有 `FAILURE_START` 优先级保持不变：同刻 Calendar PM 记为 stale，同刻 wafer PM 记录 deferred 并保留 pending，待当前停机结束后执行。存在多条 wafer PM spec 时，machine 级 `wafer_counter` 标量不再代表任一 PM，置为 `None`，per-PM snapshots 和 trace 为权威状态。规则身份与 E 级证据等级写入 `simulation_config.wafer_pm_combination_rule`。raw 没有初始 wafer-PM counter 历史；合成场景的初始值属于显式输入并写入 provenance，故该 E 级 runtime 验收不关闭 `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` 或完整 raw 组合 blocker。

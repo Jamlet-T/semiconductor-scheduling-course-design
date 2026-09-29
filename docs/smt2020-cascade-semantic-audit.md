@@ -1,6 +1,6 @@
 # SMT2020 Load / Unload / Cascade 语义审计
 
-审计日期：2026-09-27。范围为当前仓库的 HVLM/LVHM 原始表、Data Contract §3–4、固定 PySCFabSim commit `0dbff6a55c30978aa7d61d4cbd42cbf550c48e9a` 与现有 DES；本文保留级联静态证据审计边界，并引用另行记录的 non-cascade、non-batch 受限 runtime 结果，**不是完整 cascade runtime closure**。
+审计日期：2026-09-27。范围为当前仓库的 HVLM/LVHM 原始表、Data Contract `0.1.8` §3–4、固定 PySCFabSim commit `0dbff6a55c30978aa7d61d4cbd42cbf550c48e9a` 与现有 DES；本文保留级联静态证据审计边界，并引用另行记录的 non-cascade、non-batch 受限 runtime 结果，**不是完整 cascade runtime closure**。
 
 ## 决策
 
@@ -10,7 +10,7 @@
 
 ## 当前受限 runtime 更新（不关闭 blocker）
 
-当前 Simulation Contract `0.1.8` 沿用 `0.1.7` 引入的 non-cascade、non-batch、非 `per_batch` 且无 Part/BatchInterval 的阶段子链；真实 loader slice 为最小可审计闭包，另外筛选无 Setup/sampling/rework/CQT/Dedication：
+当前 Simulation Contract `0.1.9` 沿用 `0.1.7` 引入的 non-cascade、non-batch、非 `per_batch` 且无 Part/BatchInterval 的阶段子链；Data Contract `0.1.8` 保持同一受限边界；真实 loader slice 为最小可审计闭包，另外筛选无 Setup/sampling/rework/CQT/Dedication：
 
 ```text
 LOAD_START → LOAD_FINISH

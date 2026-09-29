@@ -1,8 +1,9 @@
 # SMT2020 Data Integration Gate
 
-审计日期：2026-09-28
-本轮起点：受限 non-cascade Load/Unload 验证提交 `b5a02d95e497cf60606a4c4df6e98cb1f05c638f`；本轮最终 Git commit 以验收记录为准
-Simulation Contract：`0.1.8`
+审计日期：2026-09-29
+本轮版本核对：Simulation Contract `0.1.9`、Data Contract `0.1.8`；本轮最终 Git commit 与回归结果以验收记录为准
+Simulation Contract：`0.1.9`
+Data Contract：`0.1.8`
 Policy Contract：`0.1.1`
 Loader Contract：`0.1.7`
 
@@ -10,7 +11,7 @@ Loader Contract：`0.1.7`
 
 **SMT2020 Data Integration Gate = `not_passed_gaps`。**
 
-当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运/release/batch/load-unload 的受限 validation slice、sampling 判定诊断 slice 和同机多 Calendar PM 的单机单工序 slice。两套 raw 数据跨文件引用均无 ERROR。`StepPercent` 已进入 immutable Scenario 和 operation-entry runtime。显式、manifest 绑定的 Batch v1 配置在两模型真实 initial WIP 上验证了 target/timeout 启动路径；load/unload slice 只验证 non-cascade、non-batch 两工序阶段链；Calendar PM slice 验证 raw `attach/pmcal/FOA` 到三条独立 runtime source 的受限链。MINRUN 的真实组合、多 Wafer PM 与完整日历附件仍各自保持 blocker。
+当前已建立只读 manifest、正式 loader API、全量 TSV parser、产品/路线/设备资格/加工参数/Setup/Batch/CQT/Dedication/Failure/PM/Transport/Release/WIP 的静态领域映射、结构化 audit、raw/parsed count reconciliation，以及真实加工/搬运/release/batch/load-unload 的受限 validation slice、sampling 判定诊断 slice 和同机多 Calendar PM 的单机单工序 slice。两套 raw 数据跨文件引用均无 ERROR。`StepPercent` 已进入 immutable Scenario 和 operation-entry runtime。显式、manifest 绑定的 Batch v1 配置在两模型真实 initial WIP 上验证了 target/timeout 启动路径；load/unload slice 只验证 non-cascade、non-batch 两工序阶段链；Calendar PM slice 验证 raw `attach/pmcal/FOA` 到三条独立 runtime source 的受限链；同机多 Wafer PM 的独立计数、按 `pm_id` 排序 due、串行 owner 和 per-PM snapshot 仅由 synthetic runtime 验证。MINRUN 的真实组合、多 Wafer PM raw 组合与完整日历附件仍各自保持 blocker。
 
 Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整表达的 load/unload/cascade、rework、setup MINRUN、多 calendar attachment。raw 不提供 `B_target/T_max`；仓库现在提供显式 [v1 决策配置](../configs/smt2020-batch-decision-v1.json)，以 E 级本地规则取 `B_target=raw BATCHMX`、`T_max=60 min`，不是 raw 真值或性能推荐。**在显式传入该配置的 Gate profile 下，剩余 4 类 blocker**；无配置的默认 audit 仍有 5 类，绝不隐式采用 v1。batch/sampling 诊断 slice 均省略真实设备的 load/unload，batch slice 还省略已附着的 calendar；新 Calendar PM slice 则省略 Failure、其他机、前后 route/rework 和初始历史。完整加载仍有意返回 `scenario=None`。
 
@@ -94,7 +95,7 @@ Gate 不能通过，因为真实模型仍启用了当前 runtime 尚不能完整
 | `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE` | 379 cascade ops | 1668 | load/unload and distinct completion/release timing；详见 [级联语义审计](smt2020-cascade-semantic-audit.md) |
 | `DI_UNSUPPORTED_REWORK` | 14 | 52 | visit-indexed route loop；详见 [返工语义审计](smt2020-rework-semantic-audit.md) |
 | `DI_UNSUPPORTED_SETUP_MINRUN` | 9 members | 9 | 真实 Implant setup 与 PartInterval/L/U 不可分离；详见 [语义审计](smt2020-setup-minrun-audit.md) |
-| `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 raw attachment rows；351 台多 calendar PM 生产机；692 台每机 3 条 wafer PM | 303 raw attachment rows；307 台多 calendar PM 生产机；606 台每机 3 条 wafer PM | Calendar PM 单机子链已通过受限测试；同机多 Wafer PM 与 Failure/全路线/初始历史的完整附件组合仍未闭环；详见 [逐机审计](smt2020-multi-calendar-attachment-audit.md) |
+| `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` | 303 raw attachment rows；351 台多 calendar PM 生产机；692 台每机 3 条 wafer PM | 303 raw attachment rows；307 台多 calendar PM 生产机；606 台每机 3 条 wafer PM | Calendar PM 单机子链与同机多 Wafer PM synthetic 规则已分别通过受限测试；raw 同机多 Wafer PM 与 Failure/全路线/初始历史的完整附件组合仍未闭环；详见 [逐机审计](smt2020-multi-calendar-attachment-audit.md) |
 
 此表按显式 v1 batch 配置验收。默认 `LoaderConfig(mode="audit")` 不加载项目配置，仍返回 `DI_MISSING_BATCH_DECISION_CONFIG` BLOCKER；传入 model/manifest 匹配的 `BatchDecisionConfig` 才产生 `DI_BATCH_DECISION_CONFIG_SUPPLIED` INFO，且完整 `scenario` 仍为 `None`。配置不匹配为 ERROR，不能回退。
 
@@ -214,7 +215,8 @@ scope: 一机一工序 Calendar PM 子链；不作正式 KPI/策略比较，不�
 ## 9. Modeling assumptions and unsupported features
 
 - `uniform(m,w)` 的均值/全宽解释：D/E，不是 raw 自描述；
-- machine initial setup 为空、wafer-PM initial counter=0：E/F，必须随结果标识；
+- machine initial setup 为空、synthetic wafer-PM initial counter=0：E/F，必须随结果标识；raw initial wafer-PM counter 为 `unknown`；
+- 同机多 Wafer PM 的独立 counter、`pm_id` 排序、串行 owner、Failure 同刻 deferred/pending 与 per-PM snapshot：E 级 synthetic runtime 规则；raw initial counter 历史为 `unknown`，不据此关闭完整附件 blocker；
 - initial dedication/CQT 历史：F，不恢复；
 - validation slice 使用真实 uniform sampler：仅 smoke compatibility，不能进入正式结果；同机多 Calendar PM 的 stable source ordering/stale/no-drift 是显式 E 级本地规则，raw 不提供 PM-PM 优先级；
 - transport 被建模为外生无资源延迟：E；runtime 已执行，未建模 OHT/AMHS 容量；
@@ -240,7 +242,7 @@ scope: 一机一工序 Calendar PM 子链；不作正式 KPI/策略比较，不�
 | DI-E06 | CQT mapping | 330 constraints、跨步统计、refs closed | PASS | initial history warning |
 | DI-E07 | Dedication mapping | 91 constraints、refs closed | PASS | initial history warning |
 | DI-E08 | Failure mapping | exponential sampler + calendar/attachments parsed | GAP | 真实多 Calendar PM slice 省略 Failure，完整组合未验证 |
-| DI-E09 | PM mapping | calendar/pieces/FOA parsed + 同机多 Calendar PM 合成与真实受限 slice | GAP | 多 Wafer PM、完整附件/历史组合与初始 counter |
+| DI-E09 | PM mapping | calendar/pieces/FOA parsed + 同机多 Calendar PM 合成与真实受限 slice + 同机多 Wafer PM synthetic counter/owner slice | GAP | raw 多 Wafer PM、完整附件/历史组合与初始 counter |
 | DI-E10 | Transport/Release/Sampling/Rework/Cascade | transport/release/sampling runtime + sampling 判定诊断 slice；non-cascade L/U 两工序 slice PASS-limited | GAP | 完整 cascade 双时点、rework 仍未闭环 |
 | DI-E11 | Initial WIP unknown history auditable | four explicit warnings and counts | PASS | historical facts remain unrecoverable |
 | DI-E12 | raw→parsed→Scenario references | zero ERROR; actual-data tests | PASS-static | full executable Scenario blocked |
@@ -248,4 +250,4 @@ scope: 一机一工序 Calendar PM 子链；不作正式 KPI/策略比较，不�
 | DI-E14 | Real-data end-to-end smoke | processing + configured/missing transport + restricted release/batch/L/U/Calendar PM slices + sampling decision diagnostic | PASS-limited | Calendar PM slice 省略 Failure/其他机/路线历史；其余 slice 亦不构成完整 physical-duration closure |
 | DI-E15 | BLOCKER count=0 | 显式 v1 batch 配置下 4 blocker codes/model；默认无配置为 5 | GAP | count > 0 |
 
-最终状态：`not_passed_gaps`。本轮本地全量回归 `282 passed`（先前 non-cascade L/U 阶段快照为 `261 passed`），真实多 Calendar PM 受限集成测试 `7 passed`；Runtime Reliability、M1 与 MC01～MC08 保持 `passed/verified`。正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。显式 v1 batch 配置下剩余 4 类 blocker：load/unload/cascade、rework、setup MINRUN、multi-calendar attachment；默认无配置 audit 另保留 batch 决策配置 blocker。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。
+最终状态：`not_passed_gaps`。本轮本地全量回归 `294 passed`（前次快照 `283 passed`）；同机多 Wafer PM 仅合成运行时通过，真实多 Calendar PM 受限集成测试与 Runtime Reliability、M1、MC01～MC08 的既有边界不因本次规则而改变。正式 HVLM/LVHM 实验和 CMA-ES 均不允许启动，`optimizer_enabled=false`。显式 v1 batch 配置下剩余 4 类 blocker：load/unload/cascade、rework、setup MINRUN、multi-calendar attachment；默认无配置 audit 另保留 batch 决策配置 blocker。下一阶段继续执行 **SMT2020 Runtime Compatibility Gap Closure**。

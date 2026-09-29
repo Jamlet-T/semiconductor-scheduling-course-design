@@ -146,10 +146,10 @@ class MultiCalendarPMAcceptanceTests(unittest.TestCase):
         self.assertEqual(forward.trace_as_dicts(), reverse.trace_as_dicts())
         self.assertEqual(forward.pm_intervals, reverse.pm_intervals)
         self.assertEqual(forward.completion_times, reverse.completion_times)
-        self.assertEqual(forward.provenance.simulation_contract_version, "0.1.8")
+        self.assertEqual(forward.provenance.simulation_contract_version, "0.1.9")
         self.assertEqual(
             forward.provenance.simulation_config["pm_runtime_schema_version"],
-            "0.1.1",
+            "0.1.2",
         )
 
         for result in (forward, reverse):
@@ -499,8 +499,8 @@ class MultiCalendarPMAcceptanceTests(unittest.TestCase):
         self.assertEqual(result.metrics.end_time, horizon)
         self.assertEqual(result.machine_statistics["M1"].pm_downtime, 0)
 
-    def test_multiple_wafer_pm_specs_on_one_machine_remain_explicitly_rejected(self) -> None:
-        """当前 contract 仍只允许每台 machine 一条 wafer PM。"""
+    def test_multiple_wafer_pm_specs_on_one_machine_are_accepted(self) -> None:
+        """同一 machine 的多条 wafer PM 属于已支持的 E 级合成配置。"""
         wafer_a = WaferPMSpec(
             "PM-WA-A",
             "M1",
@@ -513,8 +513,11 @@ class MultiCalendarPMAcceptanceTests(unittest.TestCase):
             50,
             TimeDistributionSpec("constant", 1),
         )
-        with self.assertRaisesRegex(ValueError, "最多一条 wafer PM"):
-            _scenario(wafer_pm=(wafer_a, wafer_b))
+        scenario = _scenario(wafer_pm=(wafer_a, wafer_b))
+        self.assertEqual(
+            [spec.pm_id for spec in scenario.wafer_pm_specs],
+            ["PM-WA-A", "PM-WA-B"],
+        )
 
 
 if __name__ == "__main__":
