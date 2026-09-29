@@ -235,7 +235,7 @@ scope: 一机一工序 Calendar PM 子链；不作正式 KPI/策略比较，不�
 | DI-E01 | Manifest/hash | `manifest.py` + stability tests | PASS | — |
 | DI-E02 | Product/Route/Operation/Tool/Lot mapping | static model + reconciliation | PASS-static | future lot 仍为 template |
 | DI-E03 | Qualification/Processing mapping | distribution sampler、PTPER resolver、真实 validation slice | PASS-partial | load/unload/cascade 由 DI-E10 阻塞 |
-| DI-E04 | Setup mapping | transition/group/MINRUN parsed | GAP | MINRUN runtime |
+| DI-E04 | Setup mapping | transition/group/MINRUN 静态映射 + 合成场景硬约束、trace audit | GAP | 真实 Implant 的 MINRUN 与 PartInterval/L/U 组合尚未运行验证；初始 setup/run 历史不可恢复 |
 | DI-E05 | Batch mapping | wafer bounds/criterion + 显式 v1 配置 + 真实 WIP target/timeout slice + per-batch 单次 physical sample | PASS-limited | 完整 L/U/calendar 组合由 DI-E10/DI-E08/09 阻塞 |
 | DI-E06 | CQT mapping | 330 constraints、跨步统计、refs closed | PASS | initial history warning |
 | DI-E07 | Dedication mapping | 91 constraints、refs closed | PASS | initial history warning |
