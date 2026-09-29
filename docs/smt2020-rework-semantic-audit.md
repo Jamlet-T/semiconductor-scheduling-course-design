@@ -119,6 +119,8 @@ raw audit 观察到 source 与 return 的 `STNFAM` 不同，且由 `STNFAM` 展�
 
 上述三步段的 tool template 均为 non-cascade、每次 LOAD/UNLOAD 各 1 min；它们仅是可追溯的**静态候选**。逐台展开真实附件后，`Litho_BE_110` 的每台合格机有 1 条 failure、3 条 calendar PM，`LithoMet_BE_18` 与 `Litho_REG_BE_63` 各有 1 条 failure、2 条 calendar PM，均无 wafer PM；因此保留真实维护配置的物理闭环还依赖 Multi-calendar，不能用省略日历的诊断 slice 冒充完整兼容。每个候选段都包含真实 sampling 重入；source 与 return 的普通 qualification 机台交集在两模型 14/52 条返工规则中均为零，这不裁决论文所说的 per-step “same machines”。initial WIP 无法提供仿真零点前的 visit、抽样与机器历史。因此即使现有 non-cascade L/U 已可执行，也不能从这些候选直接推出可信 rework route loop 或关闭 `DI_UNSUPPORTED_REWORK`。后续若选择本地 E 级 `lot/source once` 等规则，必须先版本化冻结并与按 visit 重判等替代解释做 trace 对照。
 
+2026-09-29 独立 raw 复核还确认：14/52 条返工三步段本身均无 Setup、Batch、Part/BatchInterval、CQT 或 `STNCAP=2`，所以 Cascade 双时点不是返工回跳的必然前置条件；但上述两个严格候选的 return 工序为 `per_piece`，而现有 `load_unload_validation_slice` 只接受 `per_lot` 并排除 sampling/rework。故它们仍不能直接交给该 slice builder 执行。要得到受限真实闭环，必须分别补齐 visit-indexed route loop、重入 sampling/CRN、`per_piece` 与装卸阶段的组合验证，以及多 Calendar PM/Failure 的保留或逐项显式省略；initial WIP 的 visit/机台历史继续标为 unknown。这一依赖判断不更改现有 Gate blocker。
+
 `04-项目实现/tests/test_smt2020_rework_candidate.py` 对上述 raw 行、parser、initial WIP、所有合格机的装卸与附件交集以及默认/audit 模式仍保留 blocker 做 4 项回归；它是静态证据，不执行返工仿真。
 
 目标是先验收语义链，不比较策略性能，不启动 full-fab 实验。每个模型各选择一条真实 route/source row，组成同一个 provenance 可追踪的 slice，至少覆盖：
