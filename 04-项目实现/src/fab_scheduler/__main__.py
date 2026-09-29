@@ -13,9 +13,12 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "info":
-        print("项目阶段：scaffold")
+        print("项目阶段：M1 已通过；准备课程设计受限基线")
         print("项目周期：14 周")
-        print("仿真状态：尚未实现")
+        print("仿真状态：可信轻量 DES 已验证 MC01-MC08；M1 已通过")
+        print("数据状态：完整 SMT2020 Data Integration Gate = not_passed_gaps")
+        print("课程基线状态：Course Baseline Gate = not_started")
+        print("优化器状态：optimizer_enabled=false；CMA-ES 暂不启动")
         return 0
 
     parser.print_help()

@@ -1,0 +1,309 @@
+# Data Contract：SMT2020 字段到仿真语义
+
+版本：`0.1.8`
+状态：本地模型语义已冻结；实现按 M1 分阶段验证  
+数据范围：`datasets/SMT2020_HVLM`、`datasets/SMT2020_LVHM`
+
+本文件回答三个连续问题：
+
+```text
+原始字段 → 内部数据结构 → 事件和状态如何变化
+```
+
+“字段存在”不代表机制已经实现。表中的 `FROZEN-SPEC` 表示本地模型行为已经定义，但仍需相应 micro case 通过后才能称为 `VERIFIED`。当前 MC01～MC08 已进入实现并验证；SMT2020 Loader Contract `0.1.7` 已完成静态数据链、真实加工/搬运/release/batch 受限 validation slice、sampling 判定诊断 slice、non-cascade/non-batch 的 load/process/unload 受限映射，以及多 Calendar PM 的一机一工序诊断 slice。多 Calendar PM 与同机多 Wafer PM 的合成 runtime 受限行为已达到 PASS-limited；Data Integration Gate 因完整 raw 组合等 blocker 尚未通过。
+
+## 1. 证据层级与统一约定
+
+证据优先级：
+
+1. 本仓库原始 SMT2020 文件的字段、引用关系和取值；
+2. `docs/simulation-contract.md` 中已经冻结的本地模型；
+3. PySCFabSim 固定 commit `0dbff6a55c30978aa7d61d4cbd42cbf550c48e9a` 的静态行为，作为参数解释和交叉验证证据；
+4. 无来源的内容只能成为显式、版本化的本地模型假设，不能描述为真实 Fab 事实。
+
+统一内部单位为分钟和 wafer。`sec/min/hr/day` 分别乘以 `1/60、1、60、1440`。日期使用数据中的 `%m/%d/%y %H:%M:%S` 解析，不读取本机时区。
+
+分布统一表示为：
+
+```python
+DistributionSpec(kind, parameter_1, parameter_2, unit)
+```
+
+本地 `uniform(m, w)` 冻结为“均值 + 全宽”：
+
+```text
+Uniform[m - w/2, m + w/2]
+```
+
+因此 `uniform(7.5, 2.5) min = Uniform[6.25, 8.75] min`。这一解释与 PySCFabSim 固定 commit 的 `UniformDistribution` 一致。随机抽样必须使用 `(seed, stream, entity_key, occurrence)` 派生子流，不能共享一个顺序消费的全局 RNG。
+
+## 2. 产品、路线与工序
+
+| 原始文件/字段 | 内部结构 | 运行时语义 | 状态 |
+| --- | --- | --- | --- |
+| `part.PART` | `ProductSpec.product_id` | order/WIP 通过它找到产品 | FROZEN-SPEC |
+| `part.ROUTEFILE` | `ProductSpec.route_source` | 指向实际 route 文件 | FROZEN-SPEC |
+| `part.ROUTE` | `RouteSpec.route_id` | 与 route 文件每行 `ROUTE` 一致 | FROZEN-SPEC |
+| `route.ROUTE` | `OperationSpec.route_id` | 参与 Batch 兼容键和 trace | FROZEN-SPEC |
+| `route.STEP` | `OperationSpec.step_id` | 路线文件中的显式顺序；本地两套数据均严格为 `1..N` | VERIFIED-DATA |
+| `route.DESC` | `OperationSpec.description` | 仅作可读标签，不参与资格判断 | FROZEN-SPEC |
+| `route.STNFAM` | `OperationSpec.tool_family_id` | 生成该工序的合格物理机集合 | FROZEN-SPEC |
+| `route.IGNORE` | `source_metadata` | 不能按字段名丢弃行；当前只保留用于审计 | FROZEN-SPEC |
+
+工序实例使用 `(route_id, step_id, visit_index)` 唯一标识。只有 `PROCESS_FINISH` 才能完成当前工序并推进路线；抽样跳步和返工必须写独立 trace。
+
+### 抽样与返工
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `StepPercent` | `OperationSpec.sample_percent` | 空值映射为 `None` 并始终执行，不写 decision；显式百分数按下述 operation-entry 规则判定 |
+| `RWKSTEP` | `ReworkRule.return_step` | 返工命中后回到该路线 step |
+| `REWORK` | `ReworkRule.percent` | 百分数，例如 `1.8` 表示 1.8%，使用 `rework` 子流 |
+| `RWKTYPE=lot` | `ReworkRule.scope` | 以 lot 为判定单位 |
+
+受限 sampling runtime 的精确行为为：显式 `p=100` 写 `SAMPLING_DECISION(performed=true)`，但不写随机账本；`0<p<100` 使用 `sampling` 子流抽取 `uniform(0,100)`，`draw<=p` 才执行。判定发生在派工可见以及首段/下一段 transport 之前；内部状态可先标记 `QUEUED`，但判定完成前不得进入 feasible actions。未命中时同刻写 `OPERATION_SKIPPED` 并扫描下一工序，不占设备、不抽 processing duration、不累计 wafer-PM 完成量。连续跳步允许；若余下工序全部跳过，lot 同刻完成。初始 WIP 的当前 step 在 `t=0` 依同一规则判定。
+
+随机 identity 固定为 `(lot_id, route_id, step_id, visit_index)`，当前随机判定 profile 只支持无 rework 的 `visit_index=0`。返工是否按每次 visit 重抽以及 rework/dedication 的 visit 生命周期仍是 OPEN；不得依据旧的“每 visit”描述自行实现。raw 中 sampled CQT target 为 HVLM 4、LVHM 18，但逐条均为 `p=100`，stochastic sampled CQT target 为 0；p=100 不存在 skip 分支，允许按普通 CQT target 执行，因此 sampling blocker 关闭。未来 `0<p<100` endpoint 仍显式 unsupported。全部 221/955 条显式 sampled 工序所属 tool template 都带 `LOAD=1 min / UNLOAD=1 min`；sampling validation slice 不执行这两段物理时长，只验证抽样判定与映射，load/unload blocker 保留。
+
+## 3. 设备、设备组与资格
+
+| 原始文件/字段 | 内部结构 | 运行时语义 | 状态 |
+| --- | --- | --- | --- |
+| `tool.STNFAM` | `ToolFamily.tool_family_id` | route 工序资格连接键 | FROZEN-SPEC |
+| `tool.STN` | `MachineTemplate.source_station_id` | 设备模板标识 | FROZEN-SPEC |
+| `tool.STNQTY` | `MachineTemplate.quantity` | 实例化为确定 ID：`{STN}#0001...`；每台机独立占用 | FROZEN-SPEC |
+| `tool.STNGRP` | `Machine.group_id` | downtime/统计分组，不替代 `STNFAM` 资格 | FROZEN-SPEC |
+| `tool.STNFAMLOC` | `Machine.location_id` | 搬运表 from/to 的位置键 | FROZEN-SPEC |
+| `LTIME/LTUNITS` | `Machine.load_minutes` | non-cascade 受限子链的独立 LOAD 占用阶段；不并入纯 processing | VERIFIED-limited |
+| `ULTIME/ULTUNITS` | `Machine.unload_minutes` | non-cascade 受限子链的独立 UNLOAD 占用阶段；不并入纯 processing | VERIFIED-limited |
+| `STNCAP=2` | `Machine.cascading` | 标记级联设备；不解释为可同时容纳两个普通 lot；级联 runtime 仍为 blocker | FROZEN-SPEC |
+| `RULE/FWLRANK/WAKERESRANK` | `NativeRuleMetadata` | 只用于 NativeLike 参考；纯 FIFO/SPT/EDD/CR 不继承这些复合规则 | FROZEN-SPEC |
+
+资格集合严格为：
+
+```text
+eligible_machines(operation)
+= 所有由 tool.STNFAM == operation.STNFAM 的行实例化出的物理机
+```
+
+若工序的 `STNFAM` 无对应设备、`STNQTY` 不是正整数或实例 ID 冲突，加载阶段直接失败。
+
+## 4. 加工时间与级联
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `PDIST` | `ProcessingTime.distribution.kind` | 当前原始数据均为 `uniform` |
+| `PTIME/PTIME2/PTUNITS` | 分布参数 | 按“均值 + 全宽”转换为分钟 |
+| `PTPER=per_lot` | `ProcessingBasis.PER_LOT` | 每个 lot 抽样一次 |
+| `PTPER=per_piece` | `ProcessingBasis.PER_PIECE` | 无 `PartInterval` 时分布参数乘 wafer 数 |
+| `PTPER=per_batch` | `ProcessingBasis.PER_BATCH` | 整批共享一次抽样；容量由 wafer 总数判断 |
+| `PartInterval` | `CascadingSpec.part_interval` | lot 最后一片离开时刻为基础抽样加 `(pieces-1)*interval`；设备可用时刻为 `pieces*interval`，分别产生日志 |
+| `BatchInterval` | `CascadingSpec.batch_interval` | lot 完工仍使用加工分布；设备可用间隔使用该固定值 |
+
+对 `STNCAP!=2`、非 Batch/`per_batch` 且无 `PartInterval`/`BatchInterval` 的受限子链，阶段顺序冻结为 `LOAD → PROCESS_CORE → UNLOAD`：`PROCESS_START` 在 core 开始并关闭 CQT，且不另发 `PROCESS_CORE_START` trace；`PROCESS_FINISH` 在卸载结束后作为 canonical 完成边界。LOAD/UNLOAD 分别写入独立 phase interval 和 machine statistics，纯 processing interval 只覆盖 core；第二 lot 必须等 `PROCESS_FINISH` 后才能占用该 machine。processing duration 在 committed core start 后抽样一次，Failure/PM 在任一阶段按剩余时长恢复，fixed-horizon 在 `[0,H]` 截断仍活动阶段。现有 CQT、Dedication、sampling 和 Setup 机制在合成 runtime 中不因 L/U 自动禁用；真实 loader slice 另以无这些组合的最小筛选条件形成数据证据。
+
+这只是 non-cascade、non-batch 的 `VERIFIED-limited` 子链，不是完整物理闭环。`PartInterval/BatchInterval`、`STNCAP` cascade 的 lot finish/machine release 双时点、真实 MINRUN 组合、rework 和 multi-calendar 仍保持 Data Integration BLOCKER；不得把该子链的 `PROCESS_FINISH` 推广为 cascade 的 machine release 语义。
+
+## 5. 动态投放、交期和优先级
+
+| 原始文件/字段 | 内部结构 | 运行时语义 | 状态 |
+| --- | --- | --- | --- |
+| `order.LOT` | `ReleaseTemplate.name_prefix` | 重复 lot 使用 namespaced stable ID 生成唯一实体 | FROZEN-SPEC |
+| `PART` | `ReleaseTemplate.product_id` | 找到产品路线；同时进入 immutable domain、trace 和 provenance | FROZEN-SPEC |
+| `PIECES` | `Lot.quantity_wafers` | wafer 数；不得与 lot 数混用 | FROZEN-SPEC |
+| `START` | `first_release_datetime` | 相对全局仿真零点得到首个 release | FROZEN-SPEC |
+| `RDIST` | `release_interval.kind` | 当前数据为 `constant` | VERIFIED-DATA |
+| `REPEAT/RUNITS` | `release_interval` | 第 i 个重复 lot 在 `first_release + i*interval` 投放 | FROZEN-SPEC |
+| `RPT#` | `repeat_limit` | 按 horizon 惰性生成，不预展开全部 200000 个 lot；重复 index 包含 0 | FROZEN-SPEC |
+| `LOTSPERRPT` | `lots_per_repeat` | 每个重复点生成的 lot 数；真实支持边界为 `1` | FROZEN-SPEC |
+| `DUE` | `relative_due_offset` | 先计算 `DUE-START`，每个重复 lot 的 due 为自身 release 加该偏移 | FROZEN-SPEC |
+| `PRIOR` | `Lot.priority` | 数值越大优先级越高；策略不得自动读取，纯 FIFO 不读取它 | FROZEN-SPEC |
+| `HOTLOT` | `Lot.hotlot_flag` | 原值保留；本地数据均为 `no`，不得根据 lot 名称猜测；策略不得自动读取 | VERIFIED-DATA |
+| `ORDER` | `Lot.order_id` | 追踪和聚合字段；进入 immutable domain、trace 和 provenance | FROZEN-SPEC |
+
+release 后直接进入首工序等待队列，不添加首工序前搬运。队列入队时刻是 FIFO 的第一排序键，`lot_id` 是稳定 tie-breaker。release canonical ID 为 `REL::<template_id>::<lot_prefix>::r<repeat_index:06d>::m<member_index:04d>`；`template_id` 必须包含 model/source-row namespace，`DUE-START` 按每个实际 release 平移。
+
+当前真实支持边界只覆盖 `fixed_horizon + RDIST=constant + RUNITS=min + LOTSPERRPT=1`。raw 中已核实 `START` 全为零、`PIECES=25`、`HOTLOT=no`，但这些观测不等于对其他组合的运行时授权。非 constant RDIST、`LOTSPERRPT>1`、非 fixed-horizon 或其他未证实组合必须显式标记 unsupported/blocker，不得通过预展开或重复名称构造宣称支持。
+
+## 6. 初始 WIP
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `WIP.LOT/PART/PIECES/PRIOR/DUE/ORDER` | `InitialWipLot` | 与动态 lot 对应字段相同 |
+| `CURSTEP` | `operation_index` | t=0 时在该 step 前等待；原始文件没有机台和剩余加工信息，因此不得初始化成加工中 |
+| `START` | `source_start_datetime` | 只作来源和剩余逗留分析，不与新投放 lot 的完整 cycle time 混算 |
+| `TRACE` | `source_metadata` | 当前不影响事件逻辑 |
+
+原始 WIP 不保存历史 machine 或 CQT 起点时间。数据审计发现：
+
+| 缺失历史 | HVLM | LVHM |
+| --- | ---: | ---: |
+| 落在已跨 dedication 起点、未到终点关系中的记录数 | 2435 | 1965 |
+| 落在已开启但缺起点时间的 CQT 窗口 lot 数 | 341 | 433 |
+
+本地模型冻结以下处理：
+
+- t=0 之前产生的 dedication 不继承未知绑定；到达目标 step 时按普通资格派工，同时累计 `initial_wip_missing_dedication`；
+- 只有仿真内观察到 source finish 的 CQT 窗口进入 CQT 分母；历史窗口累计 `initial_wip_unknown_cqt`；
+- 正式报告必须单列这些计数，并对“排除初始 WIP 的评价 cohort”做敏感性分析。
+
+这关闭了仿真器的行为分支，但没有补造不存在的历史事实。
+
+## 7. Batch
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `PTPER=per_batch` | `OperationSpec.is_batch` | 启用组批 |
+| `BATCHMN/BATCHMX` | `BatchCapacity(min_wafers,max_wafers)` | 单位为 wafer |
+| `tool.BATCHCRITF=crit_sameroutestep` | `BatchCompatibility.SAME_ROUTE_STEP` | 只有相同 `route_id + step_id` 可同批 |
+| `tool.BATCHPER=piece` | `BatchCapacity.unit=WAFER` | 容量按 lot wafer 数求和 |
+
+本地数据的 batch 边界只有 `(75,100)、(100,125)、(125,150)`，order/WIP 的标准 lot 为 25 wafers。这与 wafer 容量解释一致。启动规则继续遵守 Simulation Contract：
+
+```text
+n_wafers >= B_min
+and (n_wafers >= B_target or feasible_wait >= T_max)
+```
+
+低于 `B_min` 不能因超时启动。MC04 已验证 `crit_sameroutestep`、wafer 容量、FIFO 稳定成员选择、`B_target/T_max`、主动 timeout、stale timeout 与单次物理加工占用；状态为 `VERIFIED-MC04`。正式 loader 已完成 batch/tool 静态映射，per-batch 随机加工已复用统一 sampler 且每个物理 batch 只抽样一次。raw 不含 `B_target/T_max`，因此**无显式配置时仍是 Gate blocker**；Loader Contract `0.1.7` 继续接受 manifest 绑定的 `BatchDecisionConfig`。当前 v1 本地 E 级运行参数取每工序 `B_target=raw BATCHMX`、`T_max=60 min`，不是 SMT2020 原始真值或性能推荐。真实 initial-WIP batch slice 只验证决策/加工抽样；它省略设备装卸和 calendar attachment，因此不关闭对应的物理 runtime blocker。
+
+## 8. Setup
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `route.SETUP` | `OperationSpec.required_setup` | 空值表示无 setup 要求 |
+| `route.WHEN=need` | `SetupTrigger.ON_CHANGE` | 仅当前 setup 不同才触发 |
+| `route.STIME/STUNITS` | `OperationSpec.setup_override_minutes` | 非空时优先作为该工序的 setup 时长 |
+| `setup.CURSETUP/NEWSETUP` | `SetupTransition(from,to)` | 有向转移，不自动对称 |
+| `setup` 中空 `CURSETUP` | 初始/通用转移 | 当前 setup 无精确转移时的 fallback |
+| `setupgrp.SETUP/MINRUN` | `SetupMinimumRun` | 换到该 setup 后，达到最小 run 数前禁止再次换型；本地以成功完成的 lot 数计，非 raw 自描述 |
+| `tool.SETUPGRP` | `Machine.setup_group` | 连接机台和 setup 组 |
+
+时长解析顺序冻结为：
+
+```text
+route.STIME
+→ setup[(current_setup, required_setup)]
+→ setup[("", required_setup)]
+→ 数据契约错误
+```
+
+机台初始 setup 为空字符串。换型是独立 machine state/event，不能把时间静默加进加工事件。MC03 已验证有向转移、显式 `SETTING_UP` 状态、`SETUP_START/SETUP_FINISH` trace、设备占用和 setup/processing 分离统计；状态为 `VERIFIED-MC03`。正式 loader 已映射 transition、setup group 与 MINRUN；MINRUN 已有合成场景的本地硬约束运行时和 provenance，但尚无真实 raw→Scenario→runtime 组合闭环，`DI_UNSUPPORTED_SETUP_MINRUN` 仍是 Gate blocker。初始 setup 与历史 run count 仍不可从 raw 恢复；空初始 setup 是 E 级规则。计数时点和无 setup 工序处理见 Simulation Contract `0.1.9`，与固定 PySCFabSim 的派工时扣减不同。
+
+## 9. CQT
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| 当前行 `STEP` | `CQTConstraint.start_step` | source operation |
+| `STEP_CQT` | `CQTConstraint.end_step` | 显式目标 step，可跨步 |
+| `CQT/CQTUNITS` | `max_duration_minutes` | 最大实际经过时间 |
+
+起点冻结为 source step 的 `PROCESS_FINISH`，终点冻结为 target step 的 `PROCESS_START`。中间加工、等待、搬运和 setup 均计时。两套数据中的所有 CQT target 都存在且严格位于 source 之后。MC05 已验证跨步开闭、精确期限、软约束超限、多个活动时钟、Setup 延迟、Batch 成员钩子与 fixed-horizon 开放暴露；状态为 `VERIFIED-MC05-RUNTIME`。正式 loader 已装配并验证 source/target/unit 静态关系；完整 executable Scenario 被其他 blocker 阻止，初始 WIP 的历史 CQT 起点仍按第 6 节单列。
+
+## 10. Dedication
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `SVESTN=yes` | `DedicationEdge.enabled` | 当前 step 选择的具体物理机产生绑定 |
+| `FORSTEP` | `DedicationEdge.target_step` | 目标 step 必须复用该物理机 |
+
+绑定键为 `(lot_id, edge_id, visit_index)`。绑定仅在中央提交器成功提交 source step 的具体 `lot-machine` 动作、lot 进入 `RESERVED` 后建立；候选枚举和可行性检查无副作用。target step 必须同时满足普通 qualification 和绑定的物理 machine，绑定机忙时等待，冲突时显式失败；target `PROCESS_FINISH` 后释放。两套数据中的 target 均存在且严格位于 source 之后。初始 WIP 缺失历史绑定按第 6 节处理。MC06 已验证原子绑定、具体机硬过滤、忙机等待、生命周期、初始 WIP 审计、资格冲突、Setup/CQT/Batch 组合与 fixed-horizon 快照；状态为 `VERIFIED-MC06-RUNTIME`。正式 loader 已装配并验证 `SVESTN/FORSTEP` 静态关系。
+
+## 11. Failure、PM 与 SDT
+
+| 原始字段 | 内部结构 | 运行时语义 |
+| --- | --- | --- |
+| `downcal.DOWNCALNAME` | `DowntimeCalendar.id` | 被 attach 引用 |
+| `MTTFDIST/MTTF/MTTFUNITS` | failure interval | 首次及后续故障间隔 |
+| `MTTRDIST/MTTR/MTTRUNITS` | repair duration | 修复时长 |
+| `pmcal.PMCALNAME` | `PMCalendar.id` | 被 attach 引用 |
+| `PMCALTYPE=mtbpm_by_cal` | calendar PM | 按日历间隔触发 |
+| `MTBPM/MTBPMUNITS` | PM interval | 后续间隔 |
+| `MTTRDIST/MTTR/MTTR2/MTTRUNITS` | PM duration | PM 时长分布 |
+| `attach.CALTYPE` | `down` 或 `pm` | 选择日历类型 |
+| `RESTYPE/RESNAME` | attachment target | `stnfam` 或 `stngrp` 解析到具体物理机 |
+| `FOADIST/FOA/FOAUNITS` | first occurrence | 非空单位按时间；空单位按已加工 wafer 数 |
+
+本地模型冻结为：
+
+- 故障在发生时立即中断当前 setup/process/batch，修复后从剩余时间继续；
+- `mttf_by_cal` 首次从 `t=0` 计，后续从上次维修完成时刻重新累计，DOWN 时不接受嵌套有效故障；
+- 日历 PM 到点时采用同样的 preemptive-resume；
+- 多条 Calendar PM attachment 在 Scenario 中按独立 `pm_id` 保留；初始 occurrences 按 `(start_time,machine_id,pm_id,occurrence_index)` 稳定安排，后续 periodic occurrence 在前一事件到达时生成；同刻由已分配的 `event_seq` 决定唯一 downtime owner。后来同刻或重叠的 Calendar PM 记为 stale、不延期；其下一 occurrence 仍从原计划起点加 interval 生成。该规则已由合成 runtime 与真实 HVLM/LVHM 受限 slice 做 PASS-limited 验证，不是 raw 提供的优先级语义；
+- 按 wafer 触发的 PM 只在真实加工完成后按 lot wafer 或 batch 总 wafer 累计，在达到/越过阈值后、机台再次派工前执行；
+- wafer PM 完成后 counter 归零，超过阈值的余量不结转；
+- 不同受支持 wafer PM `(machine_id, pm_id)` 各自维护 counter、pending、active 和 occurrence；同一完成事件产生的多个 due 按 `pm_id` 排序记录，之后在同一 machine 上按该顺序串行执行，未取得 owner 的 pending 保留；machine 级 `wafer_counter` 在多条 spec 时为 `None`，per-PM snapshot 为权威状态；
+- raw 文件没有初始 wafer-PM counter 历史；合成场景必须显式提供初始值并写入 provenance，真实 initial-WIP 继续标记为 `unknown`，不得由 loader 猜测；
+- 每台 machine 同时只有一个 active downtime owner；active downtime 期间到达的 failure/calendar PM occurrence 无效；PM 期间被抑制的 stochastic failure 在 PM 完成后重新起算下一间隔，wafer PM pending 保留到 owner 完成后执行；
+- Failure 与 PM 同刻时 Failure 先取得 downtime ownership；同刻 Calendar PM 为 stale，同刻 wafer PM 为 deferred/pending，待 owner 完成后按 `pm_id` 顺序执行；
+- 所有被中断活动的旧完成事件必须失效；
+- failure、repair、pm_interval、pm_duration 使用独立实体索引随机流。
+
+这些选择与 PySCFabSim 延后在制完成事件的参考行为相容；counter reset、Calendar PM overlap ownership 和同刻排序是证据不足时显式冻结的本地规则，不能表述为已恢复真实 Fab 历史。当前状态为 `FAILURE VERIFIED-MC07 / PM VERIFIED-MC08-RUNTIME / multi-calendar PASS-limited`；正式 loader 已装配 calendar/attach/FOA 静态链，真实 HVLM/LVHM 一机一工序 slice 已通过，但省略 Failure、其他资格机、后续 route/rework 和初始历史；同机多 calendar 与同机多 wafer PM 的完整 raw 组合仍为 blocker。
+
+## 12. Transport
+
+两个数据集均只有：
+
+```text
+Fab → Fab, uniform(7.5, 2.5), min
+```
+
+内部建模为外生、无容量运输：
+
+- 新 release 和初始 WIP 进入首个/当前 step 前不添加运输；
+- operation 完成且存在下一工序时，按当前机台 location 到下一工序 location 查表；
+- 有匹配行时抽样并进入 `TRANSPORTING`，到 `TRANSPORT_ARRIVE` 后才可派工；
+- 无匹配 from/to 行时运输为 0，但必须累计 `missing_transport_pair`，不得静默宣称有真实物流；
+- transport 计入 cycle time 和跨越该区间的 CQT；
+- 不创建 OHT/AGV/轨道资源。
+
+当前状态为 `STATIC-LOADER-VERIFIED / RUNTIME-VERIFIED-LIMITED-SLICE`。真实 `fromto` 已进入 `TransportDefinition/TransportSpec`；runtime 使用稳定 `transport` 随机流、显式 `TRANSPORTING/TRANSPORT_ARRIVE`、fixed-horizon active snapshot 和 transport metrics。HVLM/LVHM 的真实 `Fab→Fab` 两工序 slice 均已贯通；真实 `Delay→Fab` slice 证明未配置 pair 为零时长、无随机抽样且进入 missing-pair audit。route reconciliation 同时记录 HVLM/LVHM 的全部四类 location 转移，避免只看 `fromto` 表而漏报未配置关系。该结论不包含显式 AMHS/OHT，也不解除 rework visit 尚未实现的 blocker；当前 transport identity 的 visit 维度保留为 0，待 rework 闭环时必须一并复核。
+
+## 13. Provenance 与数据版本
+
+每次 `SimulationResult` 必须包含：
+
+```json
+{
+  "simulation_contract_version": "0.1.9",
+  "dataset_version": "name@sha256:manifest_hash",
+  "git_commit": "...",
+  "seed": 42,
+  "simulation_config": {},
+  "dispatch_policy": "FIFO",
+  "termination_condition": "until_all_complete",
+  "horizon": null
+}
+```
+
+数据集版本由相对文件名和每个文件的原始 SHA-256 再生成 manifest hash；计算过程只读，不重写 `datasets/`。
+
+## 14. 已关闭项与剩余证据缺口
+
+原 Simulation Contract 中以下项已在本地模型层面关闭：首工序搬运、release/repeat/due、Batch 兼容键、Setup 时长优先级、CQT 起止事件、Dedication 关系、故障抢占与修复、单 active downtime owner 与 Failure/PM 的合成冲突规则、uniform 第二参数、运输适用转移。同机多 Calendar PM 与同机多 Wafer PM 仅在合成/受限诊断层关闭；完整 raw 附件组合仍是 Data Integration blocker。
+
+仍存在但不会被静默猜测的源数据证据缺口：
+
+1. 初始 WIP 的历史 dedication 机台和已开启 CQT 起点时间不存在；采用第 6 节显式 cohort 规则。
+2. 原始文件没有每台机初始 setup；本地模型固定为空 setup。
+3. `uniform(m,w)` 的参数解释来自开源参考实现而非原始文件自描述；本地模型已固定为均值和全宽。
+4. `TRACE`、多数 `IGNORE` 内容的业务展示含义暂缓，不影响事件逻辑。
+
+证据来源分级和本地建模假设汇总见 `semantic-evidence-matrix.md`。M1 Closure Audit 进一步确认以下历史状态不能从原始快照恢复：初始 setup、初始 dedication machine、已开启 CQT 起点和初始 wafer-PM counter；它们必须通过显式 cohort/初始化规则进入 provenance，不能由 loader 猜测。
+
+本 Data Contract 完成字段语义冻结；raw SMT2020 → `SMT2020StaticModel`、manifest、audit、加工/搬运/release/batch validation slice、受限 sampling 判定诊断 slice、真实 non-cascade load/unload 两工序 slice 与同机多 Calendar PM 受限诊断 slice 已由 Loader Contract `0.1.7` 实现。真实 sampling profile 已闭合；batch 决策配置在显式、manifest 匹配的 v1 配置下可形成受限 runtime 证据链。同机多 Wafer PM 的独立计数、按 `pm_id` 排序的 due、串行 owner 与 per-PM snapshot 已由 synthetic runtime 验证。完整 raw SMT2020 → executable Scenario 仍因 cascade、rework、setup MINRUN 和 multi-calendar attachment 的完整组合缺口未闭环；raw 的同机多 wafer PM/多日历完整组合与初始历史未闭合；load/unload 仅在受限 non-cascade/non-batch 子链进入 runtime，不关闭 `DI_UNSUPPORTED_LOAD_UNLOAD_CASCADE`；不传 batch 配置时还保留 `DI_MISSING_BATCH_DECISION_CONFIG`。当前判定见 `smt2020-data-integration-gate.md`。
+
+这些缺口不允许通过 UI 或报告措辞伪装成已知事实。HVLM/LVHM 正式实验必须等待 Data Integration Gate 的所有 blocker 全部清零并重新验收；显式 v1 batch 配置下当前为 4 类，默认无配置为 5 类。MC01～MC08 已通过，不能与尚未通过的真实数据兼容 Gate 混为一谈。
+
+### 0.1.6 修订说明
+
+冻结 non-cascade、non-batch 的 `LOAD → PROCESS_CORE → UNLOAD` 字段到事件语义：LOAD/UNLOAD 与纯 processing 分开计时，`PROCESS_START` 在 core 开始关闭 CQT，`PROCESS_FINISH` 在卸载后作为 canonical 完成边界；processing 只在 committed core start 抽样一次，Failure/PM 对三阶段按剩余时长恢复，fixed-horizon 对活动阶段截断。真实 HVLM/LVHM `r_3:18→19` slice 仅为受限诊断，明确省略其他合格机、Failure/PM 日历和初始历史；cascade、MINRUN、rework、multi-calendar 与 Gate blocker 保持不变。
+
+### 0.1.7 修订说明
+
+补充同机多 Calendar PM 的本地确定性语义：初始 occurrences 按 `(start_time,machine_id,pm_id,occurrence_index)` 排序安排，后续周期 occurrence 在前一事件到达时生成；同刻按 `event_seq` 确定单一 owner，后来同刻或重叠 occurrence stale、不延期，periodic 下一周期仍从原计划起点续期。该组合通过合成 runtime 和真实 HVLM/LVHM 一机一工序 slice 的 PASS-limited 验证，raw 不提供 PM-PM 优先级。补充当前支持范围内多 wafer PM 的独立 counter/pending/active 口径，并明确同机多 wafer PM 与完整 raw 组合仍保留 `DI_UNSUPPORTED_MULTI_CALENDAR_ATTACHMENT` 等 Gate blocker。
+
+### 0.1.8 修订说明
+
+补充同机多 Wafer PM 的数据侧组合契约：独立 `(machine_id, pm_id)` counter/pending/active/occurrence，单次完成事件按 `pm_id` 排序产生 due 记录，machine 停机 owner 按该顺序串行执行，Failure 同刻优先级保持不变；多 spec 时 machine 级 counter 标量置空，per-PM snapshot 为权威状态。原始 initial-WIP counter 仍为 `unknown`，合成初始值必须显式进入 provenance。该 E 级 synthetic 证据不关闭 raw 完整附件 blocker。
